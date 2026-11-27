@@ -7,6 +7,7 @@ import { Luna } from '@uaudio/luna-builder-sdk';
 import { requireArg } from '@/lib/args';
 import { connectLive, requireSession } from '@/lib/connect';
 import { findDevice } from '@/lib/devices';
+import { createGestures, type GestureTarget } from '@/lib/gesture';
 import { waitForNext } from '@/lib/next';
 import { writeResult } from '@/lib/results';
 
@@ -41,37 +42,28 @@ const slot = track.effects.byId(slotName);
 if (!slot || !slot.pluginId.value) throw new Error(`Track "${trackName}" has no plugin in slot ${slotName}`);
 await slot.controls.load();
 
-const bindings = new Map<number, Luna.Control>([
-  [Number(requireArg(argv, 'cc')), exactParam(slot, requireArg(argv, 'param'))],
-  [Number(requireArg(argv, 'cc2')), exactParam(slot, requireArg(argv, 'param2'))],
-]);
-for (const [cc, control] of bindings) {
-  record('bound', { cc, param: control.name.value, id: control.id, normalized: control.normalized.value, touchable: control.touchable });
-  control.normalized.onChange(() => record('value', { param: control.name.value, normalized: control.normalized.value, display: control.display.value }));
+const targets = new Map<number, GestureTarget>();
+const flagPairs: Array<[string, string]> = [['cc', 'param'], ['cc2', 'param2']];
+for (const [ccFlag, paramFlag] of flagPairs) {
+  const cc = Number(requireArg(argv, ccFlag));
+  const name = requireArg(argv, paramFlag);
+  const control = exactParam(slot, name);
+  record('bound', { cc, param: name, id: control.id, normalized: control.normalized.value, touchable: control.touchable });
+  control.normalized.onChange(() => record('value', { param: name, normalized: control.normalized.value, display: control.display.value }));
+  targets.set(cc, {
+    name,
+    begin: () => control.begin(),
+    end: () => control.end(),
+    write: (normalized) => control.normalized.set(normalized),
+  });
 }
-
-let open: { control: Luna.Control; timer: ReturnType<typeof setTimeout> } | undefined;
-const endGesture = (why: string): void => {
-  if (!open) return;
-  clearTimeout(open.timer);
-  open.control.end();
-  record('end', { param: open.control.name.value, why });
-  open = undefined;
-};
+const gestures = createGestures(IDLE_MS, record);
+const endGesture = (why: string): void => gestures.release(why);
 
 const input = new Luna.MidiInput(luna);
 const stop = input.onControlChange(device, (cc, value) => {
-  const control = bindings.get(cc);
-  if (!control) return;
-  if (open && open.control !== control) endGesture('switched control');
-  if (!open) {
-    control.begin();
-    record('begin', { param: control.name.value, from: control.normalized.value });
-    open = { control, timer: setTimeout(() => endGesture('idle'), IDLE_MS) };
-  }
-  clearTimeout(open.timer);
-  open.timer = setTimeout(() => endGesture('idle'), IDLE_MS);
-  void control.normalized.set(value / 127);
+  const target = targets.get(cc);
+  if (target) gestures.move(target, value / 127);
 });
 
 const shutdown = (code: number): void => {
