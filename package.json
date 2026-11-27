@@ -1,0 +1,17 @@
+{
+  "name": "luna-addons",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "workspaces": [
+    "add-ons/*",
+    "probes"
+  ],
+  "scripts": {
+    "sdk:build": "npm --prefix vendor/luna-builder-sdk ci",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test": "npm test --workspaces --if-present"
+  }
+}

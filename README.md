@@ -18,6 +18,16 @@ Design: [docs/superpowers/specs/2026-11-26-controller-maps-design.md](docs/super
 - LUNA 3.1.2 or later
 - Node.js 22 or later
 
+## Development
+
+```sh
+git clone --recurse-submodules https://github.com/audiocontrol-org/luna-addons.git
+cd luna-addons
+npm run sdk:build   # builds the pinned LUNA Builder SDK in vendor/
+npm install
+npm test
+```
+
 ## License
 
 [Apache License 2.0](LICENSE). The LUNA Builder SDK is governed by the Apache License 2.0 and

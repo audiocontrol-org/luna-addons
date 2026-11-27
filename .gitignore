@@ -3,3 +3,5 @@ dist/
 *.lunaaddon
 .DS_Store
 .env
+probes/results/
+.superpowers/
