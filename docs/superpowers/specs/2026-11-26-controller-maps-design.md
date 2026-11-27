@@ -269,25 +269,42 @@ no git hooks, no AI attribution in commits or PRs.
 
 ## Open questions (to stay open until investigated)
 
+The first spikes answered some of these; see
+[the spike findings](../../spikes/2026-11-26-controller-maps-findings.md).
+
 1. **Plugin targeting.** Follow `session.focusedTrack` and step through its inserts; follow
    the newest entry in `luna.gui.pluginWindows`; or combine them. The SDK exposes no "front
    window" or "last touched parameter". Settle it with a spike against real LUNA.
+   *Signals measured; combining them is suggested, with the fail-closed rule still to be
+   proven ([findings](../../spikes/2026-11-26-controller-maps-findings.md#1-plugin-targeting)).*
 2. **LCXL3 ports and mode.** Whether LUNA exposes the LCXL3's ports to Add Ons through
    `Luna.MidiInput` and `luna.midiDevices`, whether custom-mode CCs arrive cleanly, and
    whether LED feedback works from `sendControllerToOutput` / `sendSysExToOutput` in custom
-   mode.
+   mode. *Answered: yes, yes, and on/off only
+   ([findings](../../spikes/2026-11-26-controller-maps-findings.md#2-lcxl3-ports-and-mode)).*
 3. **Parameter identity.** Whether descriptor indexes from the VST3/AU scans match
    `slot.params` for the same plugin, across AU, VST3 and UADx, and how UAD plugins get
-   descriptors.
+   descriptors. *Answered for VST3 and UAD; AU and UADx still open
+   ([findings](../../spikes/2026-11-26-controller-maps-findings.md#3-parameter-identity)).*
 4. **Plugin identity.** Whether mappings carry LUNA `plugin_id`s or are matched from
-   manufacturer, name and format.
+   manufacturer, name and format. *Still open; leaning to `plugin_id`s
+   ([findings](../../spikes/2026-11-26-controller-maps-findings.md#4-plugin-identity)).*
 5. **Page switching.** For each controller, whether the page mechanism is described in the
-   mapping or fixed in the driver.
+   mapping or fixed in the driver. *Answered for the LCXL3: the driver claims DAW mode and
+   selects custom modes, so it knows the page
+   ([findings](../../spikes/2026-11-26-controller-maps-findings.md#5-page-switching)).*
 6. **Coexisting with the Rust bridge.** If both run, which owns the LCXL3. Plain custom mode
    may make this moot; reliable page tracking may require DAW mode, which would not.
+   *Not yet tested; question 5's answer means it matters.*
 7. **How much of `controller-workflow` to keep** for the layout-editing side, and whether a
    LUNA deployer belongs there.
 8. **Add On name.** "Controller Maps" is a working name and must stay free of brand names.
+9. **Hidden parameters.** How a map treats parameters that only show in some plugin states
+   (raised by the spikes).
+10. **Non-touchable parameters.** What `touchable: false` changes for writing and automating
+    a parameter (raised by the spikes).
+11. **Third-party plugin stability.** Whether the release list leaves out plugins with a crash
+    history in LUNA (raised by the spikes).
 
 ## Left to the builder
 
