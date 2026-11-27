@@ -5,8 +5,9 @@
     "types": ["@uaudio/luna-builder-sdk/global"],
     "baseUrl": ".",
     "paths": {
-      "@/*": ["src/*"]
+      "@/*": ["src/*"],
+      "@audiocontrol/canonical-midi-maps": ["../../vendor/audiocontrol/modules/canonical-midi-maps/src/index.ts"]
     }
   },
-  "include": ["src", "tests", "vite.config.ts"]
+  "include": ["src", "tests", "scripts", "vite.config.ts"]
 }

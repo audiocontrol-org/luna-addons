@@ -5,7 +5,8 @@
   "type": "module",
   "description": "Controller Maps, a LUNA Add On built with @uaudio/luna-builder-sdk",
   "scripts": {
-    "build": "tsc && vite build",
+    "bundle": "tsx scripts/build-bundle.ts",
+    "build": "npm run bundle && tsc && vite build",
     "dev": "vite build --watch",
     "typecheck": "tsc",
     "test": "vitest run",
@@ -16,8 +17,11 @@
   },
   "devDependencies": {
     "@uaudio/luna-builder-sdk": "file:../../vendor/luna-builder-sdk",
+    "tsx": "4.21.0",
     "typescript": "5.9.3",
     "vite": "8.3.0",
-    "vitest": "5.0.1"
+    "vitest": "5.0.1",
+    "yaml": "2.8.1",
+    "zod": "3.25.76"
   }
 }

@@ -6,7 +6,14 @@ import { defineConfig } from 'vitest/config';
 // that src/ imports lands in dist/main.css; link it from index.html.
 export default defineConfig(({ mode }) => ({
   publicDir: false,
-  resolve: { alias: { '@': fileURLToPath(new URL('./src', import.meta.url)) } },
+  resolve: {
+    alias: {
+      '@audiocontrol/canonical-midi-maps': fileURLToPath(
+        new URL('../../vendor/audiocontrol/modules/canonical-midi-maps/src/index.ts', import.meta.url),
+      ),
+      '@': fileURLToPath(new URL('./src', import.meta.url)),
+    },
+  },
   // A library build leaves process.env.NODE_ENV in place, and React and others read it.
   define: { 'process.env.NODE_ENV': JSON.stringify(mode) },
   build: {

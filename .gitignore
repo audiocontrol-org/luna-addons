@@ -5,3 +5,4 @@ dist/
 .env
 probes/results/
 .superpowers/
+add-ons/controller-maps/src/bundle/generated.json

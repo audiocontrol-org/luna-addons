@@ -1,3 +1,7 @@
 [submodule "vendor/luna-builder-sdk"]
 	path = vendor/luna-builder-sdk
 	url = https://github.com/uaudio-labs/luna-builder-sdk.git
+[submodule "vendor/audiocontrol"]
+	path = vendor/audiocontrol
+	url = https://github.com/audiocontrol-org/audiocontrol.git
+	shallow = true

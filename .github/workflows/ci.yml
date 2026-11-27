@@ -10,7 +10,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          submodules: true
+          submodules: recursive
       - uses: actions/setup-node@v4
         with:
           node-version-file: .nvmrc
@@ -19,6 +19,8 @@ jobs:
         run: npm run sdk:build
       - name: Install
         run: npm ci
+      - name: Build the map bundle
+        run: npm run bundle -w controller-maps
       - name: Typecheck
         run: npm run typecheck
       - name: Test
