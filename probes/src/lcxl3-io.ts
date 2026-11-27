@@ -7,12 +7,11 @@
 // LUNA lists each port direction as its own device: the controller's "Out" ports are what the
 // probe listens on (--midi-in, --daw-in), its "In" ports are what it sends to (--midi-out,
 // --daw-out). Each phase waits for probes/results/next to appear (`touch` it), then deletes it.
-import { existsSync, unlinkSync } from 'node:fs';
-import { join } from 'node:path';
 import { Luna } from '@uaudio/luna-builder-sdk';
 import { requireArg } from '@/lib/args';
 import { connectLive } from '@/lib/connect';
 import { findDevice } from '@/lib/devices';
+import { waitForNext as waitForMarker } from '@/lib/next';
 import { writeResult } from '@/lib/results';
 import { DAW_MODE_OFF, DAW_MODE_ON, decodeModeReport, MODE_CC, MODE_CHANNEL } from '@/lcxl3-protocol';
 
@@ -29,15 +28,10 @@ interface Seen {
 }
 
 const argv = process.argv.slice(2);
-const NEXT = join(process.cwd(), 'results', 'next');
 const start = Date.now();
 const log = (line: string): void => console.log(`[${((Date.now() - start) / 1000).toFixed(1)}s] ${line}`);
 
-async function waitForNext(prompt: string): Promise<void> {
-  log(`WAITING: ${prompt}  (touch probes/results/next to continue)`);
-  while (!existsSync(NEXT)) await new Promise((resolve) => setTimeout(resolve, 250));
-  unlinkSync(NEXT);
-}
+const waitForNext = (prompt: string): Promise<void> => waitForMarker(log, prompt);
 
 const luna = await connectLive();
 await luna.midiDevices.load();
