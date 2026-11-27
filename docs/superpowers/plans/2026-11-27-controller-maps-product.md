@@ -66,9 +66,27 @@ section (PR #5) and the DAW-mode decision (PR #4). Merge #4 and #5 before execut
 - **A page that doesn't match LUNA is refused whole.** Any assignment whose parameter id is
   missing, or whose name differs from LUNA's, makes the panel list the mismatches, and no
   control on that page writes.
-- **Targeting is explicit in this plan.** Track and slot are chosen in the panel, then
-  re-checked on every `pluginId` change. The automatic rule (newest window on the focused
-  track) comes in a later plan, after its live test.
+- **Targeting is a picker in the panel, and it stays.** Track and insert are chosen in the
+  panel with one click, then re-checked on every `pluginId` change. The panel always shows
+  the target as track, insert and plugin together (`Vocal · effect_2 · API Vision Channel
+  Strip`). The automatic rule (newest window on the focused track) comes in a later plan,
+  after its live test. Even then, the picker remains the way to settle a case the rule
+  refuses, such as two editors open on one track.
+- **Paging uses buttons that reach the host.** The LCXL3's Page buttons never reach the
+  host in DAW mode, so a map's `navigation.next_page` names a host-visible button
+  (`button_side` in the starter map). Shift held with that button goes to the previous
+  page, for every map. That needs no second button, and Shift can't be assigned. Each page
+  change shows `<page name> <n>/<total>` on the display overlay. The panel shows the page,
+  names the buttons that change it, and has Previous and Next buttons of its own. Play and
+  Record stay transport on every page.
+- **The Add On can hand the controller back.** The panel has Release controller, which
+  turns off the LEDs the Add On lit and sends DAW mode off, and Reclaim controller, which
+  claims it again and waits for the mode echo. A full handoff to the Rust bridge, with the
+  bridge's transport and mixer verified afterwards, is release gate 3. It stays out of this
+  plan under Orion's assumption that the two aren't used at the same time.
+- **Coverage starts with the API Vision.** It has two pages: Channel, and the 560 graphic
+  EQ. One third-party plugin joins `coverage.json` once Orion names one that has been stable
+  in LUNA. The only third-party plugin tested so far crashed LUNA on its first write.
 - **Device names are fixed constants:** the driver listens on `LCXL3 1 DAW Out` and sends to
   `LCXL3 1 DAW In`. If either is missing, the driver is `disconnected` with LUNA's device
   list; it never picks another device.
@@ -173,21 +191,33 @@ export function contractOf(yaml: string): number | undefined; // the top-level `
   - `button_bottom_<n>`: channel 1, CC `44 + n`;
   - `button_side`: channel 1, CC 104;
   - `play`: channel 1, CC 116;
-  - `record`: channel 1, CC 118.
+  - `record`: channel 1, CC 118;
+  - `shift`: channel 7, CC 63 (the Add On's page modifier; maps can't assign it).
 
 - [ ] **Step 1: Write the failing test.** Every YAML with `contract: 2` under `maps/` parses
-  against its surface. `surface.yaml` has 24 encoders, 8 faders, 17 buttons and the two
-  transport buttons, 51 controls in all. The API Vision map has `luna_plugin_ids:
-  [uaudio_api_vision_ext]` and `navigation.next_page: button_side`.
+  against its surface. `surface.yaml` has 24 encoders, 8 faders, 17 buttons, the two
+  transport buttons and `shift`, 52 controls in all. The API Vision map has
+  `luna_plugin_ids: [uaudio_api_vision_ext]`, `navigation.next_page: button_side`, and two
+  pages named `Channel` and `560 EQ`.
 - [ ] **Step 2: Run it.** Expected: FAIL, the files don't exist.
-- [ ] **Step 3: Write `surface.yaml` and a starter `ua-api-vision.yaml`.** It has one page
-  ("Channel") using only parameter ids LUNA reported live:
+- [ ] **Step 3: Write `surface.yaml` and a starter `ua-api-vision.yaml`.** It has two pages,
+  using only parameter ids LUNA reported live. Page 1, "Channel":
   - encoder row 1: `550_hf_freq`, `550_hf_gain`, `550_hmf_freq`, `550_hmf_gain`,
     `550_lmf_freq`, `550_lmf_gain`, `550_lf_freq`, `550_lf_gain`;
   - encoder row 2: `235_thresh`, `235_depth`, `235_attack`, `235_release`, `225_thresh`,
     `225_ratio`, `225_attack`, `225_release`;
   - `fader_1`: `line_gain`; `fader_8`: `level`;
   - `button_top_1`: `pad`, toggle; `button_top_2`: `phase`, toggle.
+
+  Page 2, "560 EQ":
+  - encoder row 1: `560_16khz`, `560_8khz`, `560_4khz`, `560_2khz`, `560_1khz`, `560_500hz`,
+    `560_250hz`, `560_125hz`;
+  - encoder row 2, columns 1-2: `560_63hz`, `560_31hz`;
+  - `fader_1`: `line_gain`; `fader_8`: `level`, the same as page 1;
+  - `button_top_1`: `eq_on`, toggle.
+
+  The 560 bands only show in the plugin when its EQ Select is on 560. The map's
+  description says so, because EQ Select is stepped and stays a mouse control.
 
   Each parameter's `name` is LUNA's (for example `550 HF Freq`, `Line Gain`). The layout is
   a starter for the layout editor to replace; say so in the map's description.
@@ -242,7 +272,8 @@ export function compileBundle(files: SourceFile[], revision: string, coverage: s
   - `ignores files without a contract field`.
   - `throws when a coverage plugin id has no map`: `coverage: no map for uaudio_y`.
   - `throws when a map names a surface no file defines`.
-  - `throws when a map assigns play or record`: those are transport in this Add On.
+  - `throws when a map assigns play, record or shift`: those are transport and the page
+    modifier in this Add On.
 - [ ] **Step 2: Run them.** Expected: FAIL, the module is missing.
 - [ ] **Step 3: Implement `compileBundle`.** Then implement `build-bundle.ts`, which:
   1. reads every `*.yaml` under `vendor/audiocontrol/modules/canonical-midi-maps/maps/`;
@@ -331,6 +362,7 @@ Bytes (`lcxl3-bytes.ts`):
     and no events are emitted.
   - `Mixer counts as ready` (`B6 1E 01`).
   - `buttons give press and release` (`B0 25 7F`, then `B0 25 00`).
+  - `shift gives press and release` (`B6 3F 7F`, then `B6 3F 00`) as control `shift`.
   - `missing device`: with no `LCXL3 1 DAW Out`, the status is `disconnected`, and the
     reason lists LUNA's device names.
   - `reconnect re-claims`: remove the device, then add it back (as `luna.midiDevices`
@@ -404,6 +436,9 @@ export function createTargeting(session: Luna.Session): Targeting;
   - `clearing the slot gives none`: reason `The chosen insert is now empty`.
   - `deleting the track gives none`: reason `The chosen track was deleted`.
   - `an empty slot cannot be chosen`.
+  - `two copies of one plugin on a track stay apart`. With API Visions in `effect_1` and
+    `effect_2`, choosing `effect_2` targets it, and replacing `effect_1` changes nothing
+    and sends no notification.
 - [ ] **Step 2: Run them.** Expected: FAIL. **Step 3: Implement.** Watch `slot.pluginId`
   (not `track.effects`, per the findings) and `session.tracks`. **Step 4: Run them.**
   Expected: PASS. **Step 5: Commit and push.**
@@ -437,14 +472,27 @@ export function createTargeting(session: Luna.Session): Targeting;
 
 ```ts
 export interface AppState { driver: DriverStatus; target: Target; resolution: Resolution | undefined }
-export interface App { start(): Promise<void>; stop(): Promise<void>; state(): AppState; onChange(listener: () => void): Luna.Unsubscribe; targeting: Targeting }
+export interface App {
+  start(): Promise<void>; stop(): Promise<void>;
+  release(): Promise<void>; // driver.stop(): writes stop, LEDs off, DAW mode off
+  reclaim(): Promise<void>; // driver.start(): waits for the mode echo again
+  page(step: 1 | -1): void; // the panel's Previous and Next
+  state(): AppState; onChange(listener: () => void): Luna.Unsubscribe; targeting: Targeting;
+}
 export function createApp(luna: Luna.Client, session: Luna.Session, bundle: Bundle): App;
 ```
 
 - [ ] **Step 1: Write the failing tests:**
   - `a knob move writes the mapped parameter`: target API Vision, then `BF 0D 50` writes
     `550_hf_freq`.
-  - `next_page cycles the page and shows its name on the overlay`, releasing any open touch.
+  - `next_page cycles the page and shows "560 EQ 2/2" on the overlay`, releasing any open
+    touch.
+  - `shift with next_page goes to the previous page`, and pressing shift alone writes
+    nothing.
+  - `page(-1) and page(1) match the buttons`.
+  - `release stops writes and sends DAW mode off; reclaim waits for the echo`. A knob move
+    after release writes nothing, and the status reads "Released: Reclaim controller to use
+    it again".
   - `the driver suspending or disconnecting releases the touch and stops writes`.
   - `a target swap to an unmapped plugin gives "No map for plugin …", and knob moves write
     nothing`.
@@ -466,7 +514,7 @@ export function createApp(luna: Luna.Client, session: Luna.Session, bundle: Bund
 - Produces:
 
 ```ts
-export interface PanelModel { status: string; target: string; page: string; rows: Array<{ control: string; parameter: string }>; problems: string[]; choices: Array<{ trackId: string; trackName: string; slots: Array<{ slotId: string; label: string }> }> }
+export interface PanelModel { status: string; target: string; page: string; paging: string; rows: Array<{ control: string; parameter: string }>; problems: string[]; choices: Array<{ trackId: string; trackName: string; slots: Array<{ slotId: string; label: string }> }>; controller: 'release' | 'reclaim' }
 export function panelModel(state: AppState, session: Luna.Session): PanelModel;
 ```
 
@@ -475,7 +523,13 @@ export function panelModel(state: AppState, session: Luna.Session): PanelModel;
   - "Controller: waiting for the controller to confirm DAW mode";
   - "No map for plugin …";
   - the mismatch list;
-  - one row per binding.
+  - one row per binding;
+  - `target`: `Vocal · effect_2 · API Vision Channel Strip`;
+  - `page`: `560 EQ (2 of 2)`; `paging`: `Next: side button · Previous: Shift + side button`;
+  - `controller`: `release` while the driver is claimed, `reclaim` after release.
+
+  The rendered panel also has Previous and Next buttons, which call `app.page`, and the
+  Release or Reclaim button.
 - [ ] **Step 2: Run them.** Expected: FAIL. **Step 3: Implement** the model, then a thin DOM
   `render` and `main.ts`:
   1. connect;
@@ -491,18 +545,25 @@ export function panelModel(state: AppState, session: Luna.Session): PanelModel;
 
 **Files:**
 - Create: `docs/controller-maps/setup.md` (the one-time setup: LUNA sees the LCXL3, the
-  bridge is not running, install the Add On, open it)
+  bridge is not running, install the Add On, open it; and how to hand the controller to the
+  bridge: Release controller, then start the bridge)
 - Create: `docs/spikes/2026-11-27-controller-maps-acceptance.md`
 
 - [ ] **Step 1: Install the Add On** in LUNA (`npm run install-addon -w controller-maps`) and
   open a disposable session holding an API Vision.
 - [ ] **Step 2: Walk the release gates with Orion, and record each result:**
-  - **Gate 2:** the page is known before the first event; page changes work; power-cycling
-    the controller re-claims DAW mode.
-  - **Gate 4:** a new session needs no remapping.
+  - **Gate 2:** the page is known before the first event; power-cycling the controller
+    re-claims DAW mode. Without help, Orion finds page 2, tells what a knob controls from
+    the display, returns to page 1 with Shift + side button, and Play and Record still work.
+  - **Gate 4:** from a fresh session, with the Add On installed and the controller already
+    set up, no remapping is needed.
   - **Gate 5:** undo is one step per turn; Touch automation records; a target change
     mid-gesture releases cleanly; encoders and faders don't jump.
-  - **Gate 1, explicit:** a replace or delete stops writes with the stated reason.
+  - **Gate 1, explicit:** choose between two API Visions on one track, and only the chosen
+    one moves; a replace or delete stops writes with the stated reason; choosing an
+    unmapped insert says "No map" and choosing a mapped one again recovers.
+  - **Release:** Release controller leaves the LCXL3 out of DAW mode, and Reclaim
+    controller works again without reopening the Add On.
   - **Gate 6:** API Vision ids and names match.
   - **Gate 3:** not run, under the assumption that the bridge isn't running.
 - [ ] **Step 3: Commit, push, and open a PR** for the branch with `--body-file`.
