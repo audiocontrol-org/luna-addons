@@ -1,0 +1,19 @@
+{
+  "name": "probes",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Live probes against a running LUNA, for the Controller Maps investigations",
+  "scripts": {
+    "probe": "tsx",
+    "typecheck": "tsc",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.3",
+    "@uaudio/luna-builder-sdk": "file:../vendor/luna-builder-sdk",
+    "tsx": "4.21.0",
+    "typescript": "5.9.3",
+    "vitest": "5.0.1"
+  }
+}
