@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Controller Maps</title>
+  <style>
+    :root { color-scheme: dark; }
+    body { margin: 0; background: #151515; color: #ddd; font: 14px -apple-system, Helvetica, sans-serif; }
+    main { padding: 12px 14px; }
+    #status { color: #999; }
+  </style>
+</head>
+<body>
+  <main>
+    <div id="status">Connecting...</div>
+  </main>
+  <script src="vendor/luna.global.js"></script>
+  <!-- The bundle npm run build writes from src/: one classic script, never a module script. -->
+  <script src="dist/main.js"></script>
+</body>
+</html>

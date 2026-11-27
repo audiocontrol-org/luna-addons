@@ -1,0 +1,18 @@
+{
+    "package_name": "Controller Maps",
+    "id": "org.audiocontrol.controller_maps",
+    "title": "Controller Maps",
+    "version": "0.1.0",
+    "manufacturer": "audiocontrol",
+    "categories": [
+        "Control"
+    ],
+    "sdk_version": "3.1.2",
+    "min_luna_version": "3.1.2",
+    "engines": [
+        "luna"
+    ],
+    "html": "index.html",
+    "target": "browser",
+    "run_hidden": true
+}
