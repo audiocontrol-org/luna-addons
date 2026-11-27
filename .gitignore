@@ -1,0 +1,5 @@
+node_modules/
+dist/
+*.lunaaddon
+.DS_Store
+.env
