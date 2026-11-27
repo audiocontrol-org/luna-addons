@@ -6,19 +6,26 @@
 LCXL3 in DAW mode. The maps are designed ahead of time in audiocontrol's map library,
 bundled at build time, and paged from the controller.
 
-**Architecture:** Two phases. **Phase A** (audiocontrol) adds map contract 2: maps name
-surface controls (not MIDI addresses), carry LUNA plugin ids and parameter id plus name, and
-hold pages. A surface profile gives each control's DAW-mode address. **Phase B**
-(luna-addons) compiles those maps into a bundle keyed by LUNA plugin id. It also builds:
+**Architecture:** Two phases. **Phase A** (audiocontrol) adds map contract 2:
+- maps name surface controls (not MIDI addresses), carry LUNA plugin ids and parameter id
+  plus name, and hold pages;
+- a surface profile holds every controller-specific fact: ports, control addresses, and the
+  wire protocol as message templates;
+- a surface layout binds the Add On's roles (paging, transport) to button presses and
+  gives their feedback values.
 
-- an LCXL3 DAW-mode driver;
-- a resolver;
-- a parameter writer with touch, fader pickup and encoder value push;
-- explicit targeting;
-- transport;
-- a panel.
+**Phase B** (luna-addons) is split by a hard boundary, the `Surface` interface
+(`src/surface/api.ts`):
+- **Core** (`src/core/`): resolver, parameter writer, targeting, transport, app and panel.
+  It speaks only semantic intents: a control moved, a role fired, follow this value, show
+  this label. It never sees a byte, a CC number, a port name or a device.
+- **Surface runtime** (`src/surface/runtime/`): the only code that touches LUNA's MIDI API.
+  It is a generic interpreter of a surface definition from the bundle, and contains no
+  facts about any controller.
 
-These are wired together in one app object.
+`src/main.ts` is the one place that builds a runtime and hands it to the core as a
+`Surface`. A boundary test fails the build if core reaches past the interface, or if the
+runtime names a device.
 
 **Tech Stack:**
 
@@ -61,19 +68,26 @@ section (PR #5) and the DAW-mode decision (PR #4). Merge #4 and #5 before execut
   Encoders are kept in step by value push, not relative mode. Note addresses, relative
   encoders and value ranges are added when a controller needs them, under a new contract
   number.
-- **Which control does what is decided when the map is edited, never in the Add On.** The
-  Add On holds no CC numbers and reserves no controls. Control addresses come from the
-  surface profile. Every role comes from data authored in the editor:
-  - parameters per page, from the plugin's map;
-  - `navigation` (next, optional previous) and `transport` (play, record), from the
-    surface's layout file. These don't depend on the plugin, so they keep working on an
-    unmapped insert.
-
-  Each layout role is a `ButtonBinding`: a button press, optionally made while another
-  button is held. The Add On carries out what the data names: `session.transport.toggle()` and `toggleRecord()` for
-  transport, and page changes for navigation. The only LCXL3 knowledge in Add On code is
-  its DAW-mode protocol: claim and release, mode reports, display text, LEDs and encoder
-  push.
+- **The semantic boundary (Orion's rule).** Add On code asks the `Surface` interface to
+  turn semantic intent into wire protocol. It never decides what any wire message means.
+  - **The Add On dictates only its own vocabulary:** the roles it can carry out
+    (`page.next`, `page.previous`, `transport.play`, `transport.record`), the intents it
+    accepts, and the requests it makes (follow, label, announce, indicate). Those make up
+    the interface.
+  - **Every controller-specific fact is data in audiocontrol,** authored at edit time: port
+    names, control addresses, which controls follow a pushed value, the claim and release
+    sequence, mode reports, label, announce and indicate message templates, and feedback
+    values.
+  - **Which control does what is decided in the editor:** parameters per page in the
+    plugin's map, and roles in the surface's layout. A layout binding is a button press,
+    optionally made while another button is held. Layout roles don't depend on the plugin,
+    so transport keeps working on an unmapped insert.
+  - **Enforced by `tests/boundary.test.ts`, which CI runs.** Code outside
+    `src/surface/runtime/` may not import it (except `src/main.ts`), and may not use LUNA's
+    MIDI API (`MidiInput`, `SendMidi`, `sendControllerToOutput`, `sendSysExToOutput`,
+    `midiDevices`, `onControlChange`). No file under `src/` may contain a hex literal or a
+    device or vendor name. The runtime is proven generic by driving a fictional device from
+    the same code.
 - **A page that doesn't match LUNA is refused whole.** Any assignment whose parameter id is
   missing, or whose name differs from LUNA's, makes the panel list the mismatches, and no
   control on that page writes.
@@ -83,7 +97,7 @@ section (PR #5) and the DAW-mode decision (PR #4). Merge #4 and #5 before execut
   Strip`). The automatic rule (newest window on the focused track) comes in a later plan,
   after its live test. Even then, the picker remains the way to settle a case the rule
   refuses, such as two editors open on one track.
-- **Paging is whatever the layout's `navigation` says.** The Add On only requires that a
+- **Paging is whatever the layout binds to `page.next` and `page.previous`.** The Add On only requires that a
   binding names buttons the surface profile defines. The LCXL3's Page buttons never reach
   the host in DAW mode, so the profile doesn't list them and the editor can't offer them.
   Each page change shows `<page name> <n>/<total>` on the display overlay. The panel shows
@@ -91,22 +105,23 @@ section (PR #5) and the DAW-mode decision (PR #4). Merge #4 and #5 before execut
   Next buttons of its own. Layout bindings, transport included, work the same on every
   page and for every plugin.
 - **The Add On can hand the controller back.** The panel has Release controller, which
-  turns off the LEDs the Add On lit and sends DAW mode off, and Reclaim controller, which
-  claims it again and waits for the mode echo. A full handoff to the Rust bridge, with the
+  calls `surface.release()` (the profile's release sequence, after clearing every
+  indication), and Reclaim controller, which calls `surface.claim()`. A full handoff to the Rust bridge, with the
   bridge's transport and mixer verified afterwards, is release gate 3. It stays out of this
   plan under Orion's assumption that the two aren't used at the same time.
 - **Coverage starts with the API Vision.** It has two pages: Channel, and the 560 graphic
   EQ. One third-party plugin joins `coverage.json` once Orion names one that has been stable
   in LUNA. The only third-party plugin tested so far crashed LUNA on its first write.
-- **Device names are fixed constants:** the driver listens on `LCXL3 1 DAW Out` and sends to
-  `LCXL3 1 DAW In`. If either is missing, the driver is `disconnected` with LUNA's device
-  list; it never picks another device.
+- **Ports are profile data.** The runtime listens and sends on the exact names in the
+  profile's `ports` (`LCXL3 1 DAW Out` and `LCXL3 1 DAW In` for the LCXL3). If either is
+  missing, the surface is `disconnected`, with LUNA's device list as the reason; it never
+  picks another device.
 
 ## Review Focus
 
 1. **The controller is unplugged or power-cycled mid-gesture.** The open touch is released,
-   writes stop, and on return the driver claims DAW mode again and accepts no event before
-   the mode echo. Pinned in Task 5 and Task 9.
+   writes stop, and on return the surface claims the controller again and emits no intent
+   before a ready mode report. Pinned in Task 5 and Task 9.
 2. **A parameter changes in LUNA (mouse, automation, undo) while assigned.** The encoder is
    pushed the new value, and fader pickup re-arms against it, so nothing jumps. Pinned in
    Task 6.
@@ -117,6 +132,8 @@ section (PR #5) and the DAW-mode decision (PR #4). Merge #4 and #5 before execut
    events queued for the old page are dropped. Pinned in Task 6 and Task 9.
 5. **Two maps claim the same LUNA plugin id.** The build fails naming both files. Pinned in
    Task 3.
+6. **A controller fact slips into Add On code** (a CC number, a palette value, a port name,
+   a reserved control). The boundary test fails the build. Pinned in Task 5.
 
 ---
 
@@ -147,18 +164,43 @@ Work in `~/work/audiocontrol-work`, following its `AGENTS.md`:
 ```ts
 export const SUPPORTED_CONTRACT = 2;
 export type SurfaceControlKind = 'encoder' | 'fader' | 'button';
-export interface SurfaceControl { id: string; kind: SurfaceControlKind; address: { channel: number; cc: number } } // channel 1-16
-export interface SurfaceProfile { contract: 2; surface: string; device: { manufacturer: string; model: string }; controls: SurfaceControl[] }
+export interface CcAddress { channel: number; cc: number } // channel 1-16, cc 0-127
+// `follows`: the device moves the control to a value sent with the profile's `follow` message.
+export interface SurfaceControl { id: string; kind: SurfaceControlKind; address: CcAddress; follows?: boolean }
+// A message template. In a `sysex` string, bytes are hex pairs, and these placeholders are
+// filled by the runtime: {cc} and {channel} (the target control's address), {value}
+// (round(normalized * 127)), {state} (a feedback value from the layout), and {text} (ASCII
+// bytes). The parser rejects any other placeholder.
+export type Message =
+  | { sysex: string }
+  | { cc: { channel: number | '{channel}'; number: number | '{cc}'; value: number | '{value}' | '{state}' } };
+export interface SurfaceProtocol {
+  claim: Message[];                 // sent in order when the surface is claimed
+  release: Message[];               // sent in order on release, after indications are cleared
+  mode?: { address: CcAddress; ready: number[]; suspended: Array<{ values: number[]; reason: string }> };
+  follow?: Message;                 // keeps a `follows` control at a value
+  label?: Message[];                // names one control
+  announce?: Message[];             // a transient surface-wide message
+  indicate?: { message: Message; off: number };
+}
+export interface SurfaceProfile {
+  contract: 2; surface: string; kind: 'surface';
+  device: { manufacturer: string; model: string };
+  ports: { input: string; output: string }; // LUNA device names, matched exactly
+  controls: SurfaceControl[];
+  protocol: SurfaceProtocol;
+}
 export interface Assignment { control: string; parameter: { id: string; name: string }; mode?: 'toggle' | 'momentary' }
 export interface MapPage { name: string; assignments: Assignment[] }
 // A button press, optionally while another button is held (`with`). Both are surface control ids.
 export interface ButtonBinding { control: string; with?: string }
-// Plugin-independent roles for one surface, authored in the layout editor. Active whatever
-// plugin is targeted, mapped or not. A host never chooses these.
+// Plugin-independent role bindings for one surface, authored in the layout editor. Active
+// whatever plugin is targeted, mapped or not. Role names are strings here; the consuming
+// host checks them against the roles it implements.
 export interface SurfaceLayout {
   contract: 2; version: string; surface: string; kind: 'layout';
-  navigation: { next_page: ButtonBinding; previous_page?: ButtonBinding };
-  transport?: { play?: ButtonBinding; record?: ButtonBinding };
+  bindings: Array<{ role: string; press: ButtonBinding }>;
+  feedback?: Array<{ role: string; active: number; inactive: number }>; // values for {state}
 }
 export interface ControllerMap {
   contract: 2; version: string; surface: string;
@@ -175,17 +217,22 @@ export function contractOf(yaml: string): number | undefined; // the top-level `
 ```
 
 - [ ] **Step 1: Write the feature docs and the GitHub issue.** The PRD states the contract
-  above and why: DAW mode fixes addresses, so maps name controls. Create the issue with
+  above and why. DAW mode fixes addresses, so maps name controls. Hosts such as the LUNA
+  Add On must hold no controller facts, so the profile carries the wire protocol as data. Create the issue with
   `gh issue create --body-file`.
 - [ ] **Step 2: Write the failing tests** in `contract-2.test.ts`:
   - `parseControllerMap rejects a control id the surface does not define`: errors contain
     `pages[0].assignments[0].control: "encoder_9_9" is not a control of surface "lcxl3-daw"`.
+  - `parseSurfaceProfile rejects an unknown placeholder`: errors contain
+    `protocol.label[0].sysex: unknown placeholder {foo}`.
+  - `parseSurfaceProfile rejects a sysex token that is neither a hex pair nor a
+    placeholder`, `two controls with one address`, and `follow without a follow message`.
   - `parseSurfaceLayout rejects a binding, or its "with" control, that is not a button`.
   - `parseSurfaceLayout rejects two bindings that are the same press` (same control, same
-    `with`).
+    `with`), and feedback for a role with no binding.
   - `parseControllerMap rejects a page assignment to a control the layout binds`: errors
     contain `pages[1].assignments[3].control: "button_side" is bound by the layout
-    (navigation.next_page)`. The same holds for a `with` control.
+    (page.next)`. The same holds for a `with` control.
   - `rejects two assignments to one control on a page`.
   - `rejects mode on a non-button assignment`.
   - `rejects an empty luna_plugin_ids`.
@@ -221,15 +268,29 @@ export function contractOf(yaml: string): number | undefined; // the top-level `
   - `record`: channel 1, CC 118;
   - `shift`: channel 7, CC 63.
 
+  Encoders have `follows: true`; faders and buttons don't.
+
   The ids name physical controls only. Roles such as transport or paging belong to the
-  layout.
-  The physical position of CC 104 isn't confirmed, so confirm which button sends it before
-  naming it in the profile (`button_side` is a placeholder).
+  layout. The physical position of CC 104 isn't confirmed, so confirm which button sends it
+  before naming it in the profile (`button_side` is a placeholder).
+
+  `ports`: input `LCXL3 1 DAW Out`, output `LCXL3 1 DAW In`. `protocol`, from the
+  findings' "LCXL3 in DAW mode" section:
+  - `claim`: sysex `F0 00 20 29 02 15 02 7F F7` (DAW mode on); cc channel 7, number 30,
+    value 2 (select Control); cc channel 7, numbers 69, 72 and 73, value 0 (rows absolute);
+  - `release`: sysex `F0 00 20 29 02 15 02 00 F7`;
+  - `mode`: address channel 7, CC 30. `ready: [1, 2]`. `suspended`: values 6-9 and 18-29,
+    reason `The controller is in a custom mode; switch it to Mixer or Control`;
+  - `follow`: cc `{channel}` `{cc}` `{value}`;
+  - `label`: sysex `F0 00 20 29 02 15 04 {cc} 62 F7`, then `F0 00 20 29 02 15 06 {cc} 01
+    {text} F7`;
+  - `announce`: the same pair with `36` in place of `{cc}`;
+  - `indicate`: cc channel 1, `{cc}`, `{state}`; `off: 0`.
 
 - [ ] **Step 1: Write the failing test.** Every YAML with `contract: 2` under `maps/` parses
   against its surface. `surface.yaml` has 24 encoders, 8 faders, 17 buttons, the two
   transport buttons and `shift`, 52 controls in all. `layout.yaml` parses against the
-  surface and has `navigation.next_page`. The API Vision map has `luna_plugin_ids:
+  surface and binds `page.next`. The API Vision map has `luna_plugin_ids:
   [uaudio_api_vision_ext]` and two pages named `Channel` and `560 EQ`, and it parses
   against the surface and the layout.
 - [ ] **Step 2: Run it.** Expected: FAIL, the files don't exist.
@@ -250,9 +311,11 @@ export function contractOf(yaml: string): number | undefined; // the top-level `
   - `button_top_1`: `eq_on`, toggle.
 
   Also write `layout.yaml`, as a starter for the layout editor to replace:
-  `navigation.next_page: {control: button_side}`,
-  `navigation.previous_page: {control: button_side, with: shift}`,
-  `transport.play: {control: play}`, `transport.record: {control: record}`.
+  - bindings: `page.next` on `{control: button_side}`; `page.previous` on
+    `{control: button_side, with: shift}`; `transport.play` on `{control: play}`;
+    `transport.record` on `{control: record}`;
+  - feedback: `transport.play` active 33, inactive 39; `transport.record` active 5,
+    inactive 7 (the palette values the bridge uses).
 
   The 560 bands only show in the plugin when its EQ Select is on 560. The map's
   description says so, because EQ Select is stepped and stays a mouse control.
@@ -273,7 +336,7 @@ Work on `feature/controller-maps-product` from `main`. Tests for each task run w
 **Files:**
 - Create: `.gitmodules` entry `vendor/audiocontrol` (shallow, pinned to Phase A's merge SHA)
 - Create: `add-ons/controller-maps/scripts/build-bundle.ts`, `src/bundle/types.ts`,
-  `src/bundle/compile.ts`, `coverage.json`
+  `src/bundle/compile.ts`, `src/surface/roles.ts`, `coverage.json`
 - Modify: `add-ons/controller-maps/package.json`:
   - `bundle` script: `tsx scripts/build-bundle.ts`;
   - `build` runs it first;
@@ -293,9 +356,10 @@ Work on `feature/controller-maps-product` from `main`. Tests for each task run w
 export interface Bundle {
   contract: 2;
   audiocontrolRevision: string;
-  surfaces: Record<string, { controls: SurfaceControl[]; layout: SurfaceLayout }>; // key: surface id
+  surfaces: Record<string, SurfaceDefinition>; // key: surface id
   maps: Record<string, BundledMap>; // key: LUNA plugin id
 }
+export interface SurfaceDefinition { profile: SurfaceProfile; layout: SurfaceLayout }
 export interface BundledMap { source: string; name: string; surface: string; pages: MapPage[] }
 // src/bundle/compile.ts
 export interface SourceFile { path: string; text: string }
@@ -311,8 +375,14 @@ export function compileBundle(files: SourceFile[], revision: string, coverage: s
   - `throws when a coverage plugin id has no map`: `coverage: no map for uaudio_y`.
   - `throws when a map names a surface no file defines`.
   - `throws when a surface has no layout file, or more than one`.
-  - `carries the layout's bindings through unchanged`. The compiler adds no roles of its
-    own, so a layout without `transport` gives no transport.
+  - `carries the profile and layout through unchanged`. The compiler adds no roles of its
+    own, so a layout without `transport.play` gives no play.
+  - `throws on a layout role the Add On does not implement`: `layout.yaml: role "mixer.solo"
+    is not one of page.next, page.previous, transport.play, transport.record`. The list is
+    `ROLES` in `src/surface/roles.ts`, created in this task:
+    `export const ROLES: readonly Role[] = ['page.next', 'page.previous', 'transport.play', 'transport.record'];`
+    together with `export type Role = 'page.next' | 'page.previous' | 'transport.play' | 'transport.record';`
+    It is the Add On's semantic vocabulary, and `api.ts` re-exports it.
 - [ ] **Step 2: Run them.** Expected: FAIL, the module is missing.
 - [ ] **Step 3: Implement `compileBundle`.** Then implement `build-bundle.ts`, which:
   1. reads every `*.yaml` under `vendor/audiocontrol/modules/canonical-midi-maps/maps/`;
@@ -327,7 +397,7 @@ export function compileBundle(files: SourceFile[], revision: string, coverage: s
 ### Task 4: Resolver
 
 **Files:**
-- Create: `src/resolve.ts`
+- Create: `src/core/resolve.ts`
 - Test: `tests/resolve.test.ts`
 
 **Interfaces:**
@@ -336,11 +406,11 @@ export function compileBundle(files: SourceFile[], revision: string, coverage: s
 
 ```ts
 export interface LunaParam { id: string; name: string }
-export interface ResolvedBinding { control: string; kind: SurfaceControlKind; paramId: string; label: string; mode?: 'toggle' | 'momentary' }
+export interface ResolvedBinding { control: string; paramId: string; label: string; mode?: 'toggle' | 'momentary' }
 export type Resolution =
   | { ok: true; map: BundledMap; pageIndex: number; pageName: string; bindings: ResolvedBinding[] }
   | { ok: false; reason: string; mismatches: string[] };
-export function resolve(bundle: Bundle, pluginId: string, pageIndex: number, params: readonly LunaParam[]): Resolution;
+export function resolve(maps: Bundle['maps'], pluginId: string, pageIndex: number, params: readonly LunaParam[]): Resolution;
 ```
 
 - [ ] **Step 1: Write the failing tests:**
@@ -349,107 +419,137 @@ export function resolve(bundle: Bundle, pluginId: string, pageIndex: number, par
   - `a name mismatch refuses the page`: mismatches contain
     `line_gain: map says "Line Gain", LUNA says "Line Level"`.
   - `page index wraps` (index 2 of a two-page map gives page 0).
-  - `bindings carry the surface kind`.
 - [ ] **Step 2: Run them.** Expected: FAIL. **Step 3: Implement.** **Step 4: Run them.**
   Expected: PASS. **Step 5: Commit and push.**
 
-### Task 5: LCXL3 DAW-mode driver
+### Task 5: The Surface interface, the generic runtime, and the boundary test
 
 **Files:**
-- Create: `src/driver/types.ts`, `src/driver/lcxl3.ts`, `src/driver/lcxl3-bytes.ts`
-- Test: `tests/lcxl3.test.ts` (MockEngine: `addMidiDevice`, `receiveMidi`, `midiSent`)
+- Create: `src/surface/api.ts` (the interface; the only surface module core may import)
+- Create: `src/surface/runtime/create.ts`, `src/surface/runtime/messages.ts` (template
+  filling), `src/surface/runtime/claim.ts` (claim, mode report and reconnect state)
+- Test: `tests/surface-runtime.test.ts` (MockEngine: `addMidiDevice`, `receiveMidi`,
+  `midiSent`), `tests/fixtures/test-surface.ts` (a fictional device), `tests/boundary.test.ts`
 
 **Interfaces:**
-- Consumes: `SurfaceControl[]` for `lcxl3-daw` from the bundle.
+- Consumes: `Role` and `ROLES` from Task 3's `roles.ts`, and `SurfaceDefinition` (runtime
+  only).
 - Produces:
 
 ```ts
-export type ControlEvent = { control: string; kind: 'absolute'; value: number } | { control: string; kind: 'press' | 'release' }; // value 0..1
-export type DriverStatus = { state: 'ready' } | { state: 'waiting'; reason: string } | { state: 'suspended'; reason: string } | { state: 'disconnected'; reason: string };
-export interface ControllerDriver {
-  start(): Promise<void>;
-  stop(): Promise<void>; // turns off the LEDs it lit, then DAW mode off
-  status(): DriverStatus;
+// src/surface/api.ts: semantic only. No addresses, bytes, ports or device names.
+export type { Role } from '@/surface/roles';
+export type Intent =
+  | { kind: 'move'; control: string; value: number }   // a continuous control, absolute 0..1
+  | { kind: 'press' | 'release'; control: string }     // a button no layout binding owns
+  | { kind: 'role'; role: Role };                       // a layout binding fired
+export type SurfaceStatus =
+  | { state: 'ready' }
+  | { state: 'claiming' | 'suspended' | 'disconnected' | 'released'; reason: string };
+export interface SurfaceControlInfo { id: string; continuous: boolean; follows: boolean }
+export interface Surface {
+  claim(): Promise<void>;
+  release(): Promise<void>; // clears every indication, then the profile's release sequence
+  status(): SurfaceStatus;
   onStatus(listener: () => void): Luna.Unsubscribe;
-  onEvent(listener: (event: ControlEvent) => void): Luna.Unsubscribe;
-  pushValue(control: string, normalized: number): Promise<void>;
-  showName(control: string, text: string): Promise<void>;
-  showOverlay(text: string): Promise<void>;
-  setLed(control: string, palette: number): Promise<void>;
+  onIntent(listener: (intent: Intent) => void): Luna.Unsubscribe; // nothing is emitted unless ready
+  controls(): readonly SurfaceControlInfo[];
+  bindingText(role: Role): string | undefined; // e.g. "shift + button_side", for the panel
+  follow(control: string, normalized: number): Promise<void>; // only for `follows` controls
+  label(control: string, text: string): Promise<void>;
+  announce(text: string): Promise<void>;
+  indicate(role: Role, state: 'active' | 'inactive'): Promise<void>;
 }
-export function createLcxl3Driver(luna: Luna.Client, surface: readonly SurfaceControl[]): ControllerDriver;
+// src/surface/runtime/create.ts
+export function createSurface(luna: Luna.Client, definition: SurfaceDefinition): Surface;
 ```
 
-Bytes (`lcxl3-bytes.ts`):
+A request the profile has no template for (for example, `label` on a device with no
+`label` messages) throws, naming the surface and the missing template. It never sends
+something else instead.
 
-- DAW on and off: `F0 00 20 29 02 15 02 7F F7` and `F0 00 20 29 02 15 02 00 F7`.
-- Mode: channel 7 (index 6), CC 30. 1 is Mixer, 2 is Control; 6-9 and 18-29 are custom
-  modes. Rows to absolute: `B6 45 00`, `B6 48 00`, `B6 49 00`.
-- Encoder push: channel 16, the encoder's CC, `round(normalized*127)`.
-- Name: `F0 00 20 29 02 15 04 <cc> 62 F7`, then `F0 00 20 29 02 15 06 <cc> 01 <ascii> F7`.
-- Overlay: the same, with target `0x36`.
-- LED: channel 1, `<cc> <palette>`.
+- [ ] **Step 1: Write the failing runtime tests.** They run once against the bundled LCXL3
+  definition, with exact bytes, and once against `test-surface.ts`. The fictional device
+  has other port names, channels, CCs, claim bytes and mode values, plus a layout of its
+  own. Each case passes on both with no code change:
+  - `claim sends the claim sequence in order` (LCXL3: DAW on, `B6 1E 02`, then the three
+    row-absolute messages).
+  - `claiming until a ready mode report`: before it, an encoder CC emits nothing. After
+    `B6 1E 02`, the status is `ready` and `BF 0D 40` emits
+    `{kind: 'move', control: 'encoder_1_1', value: 64/127}`.
+  - `a suspended mode value suspends with the profile's reason`, and emits nothing.
+  - `a mode value the profile does not list suspends` with reason `Unrecognised mode report
+    12 from lcxl3-daw`.
+  - `a button no layout binding owns gives press and release`.
+  - `a layout binding emits its role`: `button_side` gives `{kind: 'role', role: 'page.next'}`.
+    `shift` held, then `button_side`, gives `page.previous`. `shift` alone emits nothing,
+    because the layout uses it as a `with` control.
+  - `missing port`: the status is `disconnected`, and the reason lists LUNA's device names.
+  - `reconnect re-claims`: the device goes and comes back, the claim sequence is sent
+    again, and the status is `claiming` until the mode report.
+  - `follow, label, announce and indicate fill their templates` (LCXL3: `BF 0D <value>`;
+    the two label sysex messages with ASCII; `B0 74 21` for `transport.play` active).
+  - `release clears indications, then sends the release sequence`; the status is
+    `released`.
+  - `a request with no template throws`, naming the surface and the template.
+- [ ] **Step 2: Write the failing boundary test** (`tests/boundary.test.ts`). It reads
+  every file under `src/` and asserts:
+  - only files under `src/surface/runtime/`, and `src/main.ts`, import
+    `@/surface/runtime`;
+  - outside `src/surface/runtime/`, no file mentions `MidiInput`, `SendMidi`,
+    `sendControllerToOutput`, `sendSysExToOutput`, `midiDevices` or `onControlChange`;
+  - outside `src/surface/` and `src/bundle/`, no file imports `SurfaceDefinition`,
+    `SurfaceProfile` or `SurfaceLayout`;
+  - no file under `src/` contains a hex literal (`/0x[0-9a-f]/i`), or the strings `LCXL`,
+    `Novation` or `Launch Control`.
 
-- [ ] **Step 1: Write the failing tests:**
-  - `start claims DAW mode and selects Control`: `midiSent` holds DAW on, then `B6 1E 02`,
-    then the three row-absolute messages, in that order.
-  - `waits for the mode echo`: before `B6 1E 02` is received, the status is `waiting` and an
-    encoder CC emits nothing. After it, the status is `ready` and `BF 0D 40` emits
-    `{control: 'encoder_1_1', kind: 'absolute', value: 64/127}`.
-  - `a custom-mode report suspends`: receiving `B6 1E 06` gives the status
-    `{state: 'suspended', reason: 'The controller is in custom mode 1; switch it to Mixer or Control'}`,
-    and no events are emitted.
-  - `Mixer counts as ready` (`B6 1E 01`).
-  - `buttons give press and release` (`B0 25 7F`, then `B0 25 00`).
-  - `a channel-7 button gives press and release`: a surface fixture's control on channel
-    7, CC 63 (`B6 3F 7F`, then `B6 3F 00`) arrives under its surface id. The driver turns
-    addresses into ids from the profile and gives no control a role.
-  - `missing device`: with no `LCXL3 1 DAW Out`, the status is `disconnected`, and the
-    reason lists LUNA's device names.
-  - `reconnect re-claims`: remove the device, then add it back (as `luna.midiDevices`
-    changes). DAW on is sent again, and the status is `waiting` until the echo.
-  - `pushValue`, `showName` and `setLed` send the exact bytes above.
-  - `stop` sends LED 0 for every control lit, then DAW off.
-- [ ] **Step 2: Run them.** Expected: FAIL.
-- [ ] **Step 3: Implement.** Keep the byte builders in `lcxl3-bytes.ts`, and the state
-  machine and device watching in `lcxl3.ts`.
-- [ ] **Step 4: Run them.** Expected: PASS. **Step 5: Commit and push.**
+  Each assertion lists the offending file and line. A self-check plants a temporary core
+  file holding `sendControllerToOutput` and `0x21` in a fixture directory, and proves the
+  scan reports both.
+- [ ] **Step 3: Run them.** Expected: FAIL, the modules are missing.
+- [ ] **Step 4: Implement** the interface, then the runtime. `messages.ts` fills
+  templates. `claim.ts` holds the claiming, ready, suspended and disconnected states and
+  watches the ports. `create.ts` turns addresses into control ids and layout presses into
+  roles.
+- [ ] **Step 5: Run them.** Expected: PASS. **Step 6: Commit and push.**
 
 ### Task 6: Parameter writer
 
 **Files:**
-- Create: `src/writer/gestures.ts`, ported from `probes/src/lib/gesture.ts` with its tests;
-  `src/writer/writer.ts`
-- Test: `tests/gestures.test.ts`, `tests/writer.test.ts` (MockEngine, with a 1176 insert as
-  in the SDK's own tests)
+- Create: `src/core/writer/gestures.ts`, ported from `probes/src/lib/gesture.ts` with its
+  tests; `src/core/writer/writer.ts`
+- Test: `tests/gestures.test.ts`, `tests/writer.test.ts`. They use MockEngine, with a 1176
+  insert as in the SDK's own tests, and a fake `Surface` that records calls (no bytes).
 
 **Interfaces:**
-- Consumes: `ResolvedBinding`, `ControlEvent`, and `ControllerDriver.pushValue`.
+- Consumes: `ResolvedBinding`, and `Intent`, `Surface.follow` and `Surface.controls()`
+  from `@/surface/api`.
 - Produces:
 
 ```ts
 export interface BoundParameter { binding: ResolvedBinding; param: Luna.Control }
 export interface ParameterWriter {
   assign(bound: readonly BoundParameter[]): void;
-  handle(event: ControlEvent): void;
+  handle(intent: Intent): void; // 'move', 'press' and 'release' only; roles go to the app
   release(why: string): void;
 }
-export function createParameterWriter(driver: ControllerDriver, idleMs: number, record: (event: string, detail: unknown) => void): ParameterWriter;
+export function createParameterWriter(surface: Surface, idleMs: number, record: (event: string, detail: unknown) => void): ParameterWriter;
 ```
 
 The idle timeout is 250 ms, as in the spike.
 
 - [ ] **Step 1: Write the failing tests** (`writer.test.ts`):
-  - `encoder writes inside one touch`: three absolute events make one `set_touch` bracket,
+  - `a move writes inside one touch`: three `move` intents make one `set_touch` bracket,
     three `normalized_value` writes, and an `end` after idle.
-  - `assign pushes each encoder its parameter's value`.
-  - `fader pickup`: with the parameter at 0.5, fader events 0.1 and 0.3 write nothing. Then
-    0.52 writes, and later events track.
-  - `assign mid-gesture releases the old touch and drops queued events`.
-  - `a parameter changed in LUNA re-pushes the encoder and re-arms fader pickup`.
+  - `assign follows each "follows" control to its parameter's value` (a
+    `surface.follow(control, value)` call per control).
+  - `pickup for a control that does not follow`: with the parameter at 0.5, moves 0.1 and
+    0.3 write nothing. Then 0.52 writes, and later moves track.
+  - `assign mid-gesture releases the old touch and drops queued intents`.
+  - `a parameter changed in LUNA re-follows the control, or re-arms pickup`.
   - `toggle button flips once per press`, and `momentary writes 1 on press and 0 on
     release`.
-  - `release ends an open touch` (the driver-disconnect path).
+  - `release ends an open touch` (the surface-disconnect path).
 - [ ] **Step 2: Run them.** Expected: FAIL. **Step 3: Implement.** Fader pickup arms on
   `assign` and on every outside change. It writes once an incoming value is within 1/127 of
   the parameter's value, or crosses it between two events. **Step 4: Run them.**
@@ -458,7 +558,7 @@ The idle timeout is 250 ms, as in the spike.
 ### Task 7: Explicit targeting
 
 **Files:**
-- Create: `src/targeting.ts`
+- Create: `src/core/targeting.ts`
 - Test: `tests/targeting.test.ts`
 
 **Interfaces:**
@@ -487,97 +587,97 @@ export function createTargeting(session: Luna.Session): Targeting;
 ### Task 8: Transport
 
 **Files:**
-- Create: `src/transport.ts`
-- Test: `tests/transport.test.ts`
+- Create: `src/core/transport.ts`
+- Test: `tests/transport.test.ts` (fake `Surface`)
 
 **Interfaces:**
-- Produces: `export function bindTransport(session: Luna.Session, driver: ControllerDriver, transport: SurfaceLayout['transport']): Luna.Unsubscribe;`
+- Produces: `export function bindTransport(session: Luna.Session, surface: Surface): Luna.Unsubscribe;`
 
 - [ ] **Step 1: Write the failing tests:**
-  - The layout's `transport.play` binding calls `transport.toggle()`, and its
-    `transport.record` binding calls `toggleRecord()`. With a fixture layout that binds play
-    to `button_bottom_8`, pressing `play` does nothing.
-  - `no transport in the layout binds nothing`.
-  - `transport works with no target`: no plugin chosen, and play still toggles.
-  - LEDs follow `transport.playing` on the bound control: palette `0x21` while playing and
-    `0x27` when stopped. They also follow `recordEnabled`: `0x05` when armed and `0x07` when
-    not (the colours the bridge uses).
+  - `a transport.play role toggles the transport`, and `transport.record` calls
+    `toggleRecord()`. A `press` intent on any control does nothing here.
+  - `transport works with no target`: no plugin is chosen, and play still toggles.
+  - `indication follows the transport`: `indicate('transport.play', 'active')` while
+    playing and `'inactive'` when stopped; `transport.record` follows `recordEnabled` the
+    same way. What those states look like is the layout's business.
 - [ ] **Step 2: Run them.** Expected: FAIL. **Step 3: Implement.** **Step 4: Run them.**
   Expected: PASS. **Step 5: Commit and push.**
 
+The runtime test in Task 5 already proves that a layout which leaves `transport.play` out
+emits no such role.
 ### Task 9: The app
 
 **Files:**
-- Create: `src/app.ts`
-- Test: `tests/app.test.ts` (MockEngine, end to end with the bundled API Vision fixture)
+- Create: `src/core/app.ts`
+- Test: `tests/app.test.ts` (MockEngine for LUNA, with the bundled API Vision map and a
+  fake `Surface` driven by intents)
 
 **Interfaces:**
-- Consumes: everything above.
+- Consumes: everything above. The app receives the `Surface` by injection. It never builds
+  one, and never sees a `SurfaceDefinition`.
 - Produces:
 
 ```ts
-export interface AppState { driver: DriverStatus; target: Target; resolution: Resolution | undefined }
+export interface AppState { surface: SurfaceStatus; target: Target; resolution: Resolution | undefined }
 export interface App {
   start(): Promise<void>; stop(): Promise<void>;
-  release(): Promise<void>; // driver.stop(): writes stop, LEDs off, DAW mode off
-  reclaim(): Promise<void>; // driver.start(): waits for the mode echo again
+  release(): Promise<void>; // ends any touch, then surface.release()
+  reclaim(): Promise<void>; // surface.claim()
   page(step: 1 | -1): void; // the panel's Previous and Next
   state(): AppState; onChange(listener: () => void): Luna.Unsubscribe; targeting: Targeting;
 }
-export function createApp(luna: Luna.Client, session: Luna.Session, bundle: Bundle): App;
+export function createApp(session: Luna.Session, maps: Bundle['maps'], surface: Surface): App;
 ```
 
 - [ ] **Step 1: Write the failing tests:**
-  - `a knob move writes the mapped parameter`: target API Vision, then `BF 0D 50` writes
-    `550_hf_freq`.
-  - `next_page cycles the page and shows "560 EQ 2/2" on the overlay`, releasing any open
-    touch.
-  - `the layout's previous_page binding goes back`: with the starter layout, `shift` held
-    and then `button_side` goes to the previous page, and pressing `shift` alone writes
-    nothing. A fixture layout that binds previous to another button changes the behaviour
-    with no code change.
-  - `an unmapped insert keeps transport`: with no map, paging does nothing and the layout's
-    transport still works.
-  - `page(-1) and page(1) match the buttons`.
-  - `release stops writes and sends DAW mode off; reclaim waits for the echo`. A knob move
-    after release writes nothing, and the status reads "Released: Reclaim controller to use
-    it again".
-  - `the driver suspending or disconnecting releases the touch and stops writes`.
-  - `a target swap to an unmapped plugin gives "No map for plugin …", and knob moves write
+  - `a move writes the mapped parameter`: target API Vision, then
+    `{kind: 'move', control: 'encoder_1_1', value: 0.63}` writes `550_hf_freq`.
+  - `page.next cycles the page and announces "560 EQ 2/2"`, releasing any open touch.
+  - `page.previous goes back`, and `page(-1)` and `page(1)` do the same as the roles.
+  - `an unmapped insert keeps transport`: with no map, page roles do nothing and
+    `transport.play` still toggles.
+  - `release ends the touch and calls surface.release; reclaim calls surface.claim`. A move
+    after release writes nothing, and the panel status reads "Released: Reclaim controller
+    to use it again".
+  - `the surface suspending or disconnecting releases the touch and stops writes`.
+  - `a target swap to an unmapped plugin gives "No map for plugin …", and moves write
     nothing`.
   - `a refused page writes nothing and lists mismatches`.
-  - `encoder names are shown on assign`.
+  - `assign labels each bound control with its parameter name`.
 - [ ] **Step 2: Run them.** Expected: FAIL. **Step 3: Implement.** Bindings are rebuilt on
-  any change of target, page, `pluginId` or driver readiness. **Step 4: Run them.**
+  any change of target, page, `pluginId` or surface readiness. **Step 4: Run them.**
   Expected: PASS. **Step 5: Commit and push.**
 
 ### Task 10: Panel and entry point
 
 **Files:**
-- Create: `src/panel/model.ts`, `src/panel/render.ts`
+- Create: `src/core/panel/model.ts`, `src/core/panel/render.ts`
 - Modify: `src/main.ts`, `index.html`; delete `src/logic.ts` and its test once nothing uses
   them
-- Test: `tests/panel-model.test.ts`
+- Test: `tests/panel-model.test.ts`, and `tests/wiring.test.ts`. The wiring test is the one
+  core-facing test that sees bytes: MockEngine, the bundled LCXL3 definition, and
+  `createSurface` plus `createApp` wired as `main.ts` wires them. `BF 0D 50` from the device
+  writes `550_hf_freq`.
 
 **Interfaces:**
 - Produces:
 
 ```ts
 export interface PanelModel { status: string; target: string; page: string; paging: string; rows: Array<{ control: string; parameter: string }>; problems: string[]; choices: Array<{ trackId: string; trackName: string; slots: Array<{ slotId: string; label: string }> }>; controller: 'release' | 'reclaim' }
-export function panelModel(state: AppState, session: Luna.Session): PanelModel;
+export function panelModel(state: AppState, session: Luna.Session, surface: Pick<Surface, 'bindingText'>): PanelModel;
 ```
 
 - [ ] **Step 1: Write the failing tests.** Each `AppState` variant gives the panel text it
   should show:
-  - "Controller: waiting for the controller to confirm DAW mode";
+  - for a `claiming` surface, "Controller: " plus the surface's reason (the core adds no
+    device wording);
   - "No map for plugin …";
   - the mismatch list;
   - one row per binding;
   - `target`: `Vocal · effect_2 · API Vision Channel Strip`;
-  - `page`: `560 EQ (2 of 2)`; `paging` is written from the layout's bindings, using
-    surface control ids, so the starter layout gives `Next: button_side · Previous: shift +
-    button_side`;
-  - `controller`: `release` while the driver is claimed, `reclaim` after release.
+  - `page`: `560 EQ (2 of 2)`; `paging` comes from `surface.bindingText`, so the starter
+    layout gives `Next: button_side · Previous: shift + button_side`;
+  - `controller`: `reclaim` while the surface is `released`, and `release` otherwise.
 
   The rendered panel also has Previous and Next buttons, which call `app.page`, and the
   Release or Reclaim button.
@@ -586,7 +686,9 @@ export function panelModel(state: AppState, session: Luna.Session): PanelModel;
   1. connect;
   2. require a session;
   3. load `generated.json`;
-  4. `createApp`, then `start`;
+  4. `createSurface(luna, bundle.surfaces[<the maps' surface id>])`, which throws if the
+     bundle has no such surface; then `createApp(session, bundle.maps, surface)` and
+     `start`;
   5. render on every change;
   6. call `stop` on `pagehide`.
 - [ ] **Step 4: Run them**, then `npm run typecheck && npm run pack -w controller-maps`.

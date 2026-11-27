@@ -22,6 +22,30 @@ Open-source LUNA Add Ons from audiocontrol. Design:
   path.
 - Use `tsx`, never `ts-node`.
 
+## The controller boundary
+
+Add On code never decides what a controller's wire protocol means, and never decides what
+a control does.
+
+- Add On code speaks semantic intent through an interface: a control moved, a role fired,
+  follow this value, show this label, indicate this state. The Add On defines that
+  vocabulary, and nothing else about the wire.
+- Every controller-specific fact is data in audiocontrol, authored at edit time:
+  - port names and control addresses;
+  - message templates;
+  - mode reports;
+  - feedback values;
+  - which control does what.
+- Only the surface runtime touches LUNA's MIDI API. It interprets that data and holds no
+  device facts. It must be able to drive a fictional device with no code change.
+- A boundary test enforces this in CI:
+  - no MIDI API outside the runtime;
+  - no hex literals in `src/`;
+  - no device or vendor names in `src/`.
+
+  If a change needs a byte, a CC, a port name or a reserved control in Add On code, the
+  change is wrong: put the fact in audiocontrol's data instead.
+
 ## Git
 
 - No git hooks.
