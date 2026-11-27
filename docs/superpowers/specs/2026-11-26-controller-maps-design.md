@@ -75,12 +75,16 @@ outside the controller driver may be LCXL3-specific.
   with the old `@oletizi/canonical-midi-maps` consumers is not required.
 - **First release is GitHub releases only.** A UA marketplace listing comes later, so the
   brand-free name and the public `contact` field can wait.
-- **Done for the first release:** the Add On applies any valid mapping in the library, proven
-  live against the existing maps (Analog Obsession CHANNEV, TAL-J-8, Arturia Jup-8V, Mini V4)
-  and against at least one UAD plugin, for which a mapping must be written.
-- **LCXL3 in custom mode first.** In a custom mode the LCXL3 sends the plain CCs the
-  mappings already address, with no DAW-mode handshake, which may also avoid contention with
-  the Rust bridge's DAW-mode use. To confirm in the port spike.
+- **Release coverage is a named list** of controller / plugin / format combinations, each
+  migrated to the versioned map contract, build-checked, and validated live (see Release
+  gates). The first list is drawn from the existing maps (Analog Obsession CHANNEV, TAL-J-8,
+  Arturia Jup-8V, Mini V4) plus at least one UAD plugin, for which a mapping must be written.
+- **LCXL3 mode is decided by the paging spike, not assumed.** Plain custom mode (standalone)
+  needs no handshake and would leave DAW mode to the Rust bridge, but audiocontrol's capture
+  of Novation's programmer's guide shows the device reports and accepts the active mode
+  (`B6 1E vv`, custom modes 1-16 included) in DAW mode. If knowing the active page reliably
+  needs DAW mode, the Add On and the bridge contend for the device, and coexistence becomes a
+  real gate rather than moot.
 
 ## Background
 
@@ -100,8 +104,9 @@ What this design relies on:
 - `luna.midiDevices`: matched by `name`, since device uids change on restart.
 - Effect slots and `slot.params`: the parameters of each insert; `slot.pluginId` for matching
   a mapping.
-- Touch semantics (SDK EVIDENCE fact 78) and `Luna.bindGesture`: an edit must be touched or it
-  is neither one undo step nor recorded as automation.
+- Touch semantics (SDK EVIDENCE fact 78) and `control.begin()` / `end()`: an edit must be
+  touched or it is neither one undo step nor recorded as automation. `Luna.bindGesture` and
+  `bindDrag` are for pointer input; a MIDI gesture's lifecycle is the writer's own.
 - `session.focusedTrack`, `luna.gui.pluginWindows` (open plugin editor windows as
   `{session_uid, channel_uid, insert_type}`), `luna.gui.showPlugin` / `hidePlugin`: candidate
   signals for targeting.
@@ -152,9 +157,12 @@ extending `CanonicalMidiMap` there:
   `string | number`. The Add On needs the parameter's name as well as its index, and refuses
   (with a visible message) a mapping whose names do not match what LUNA reports, rather than
   driving the wrong parameter.
-- **Value behaviour:** absolute or relative (encoders), range, and button mode (toggle or
-  momentary). The legacy `InputBehavior` had these; the current `ControlDefinition` mostly
-  does not.
+- **Value behaviour:** absolute or relative (encoders) and range need explicit
+  representation; button mode (toggle or momentary) is already there.
+- **Note addresses:** controls that send notes (some buttons) need a note address, not only a
+  CC.
+- **A version:** the contract is versioned, so the build can refuse what it does not
+  understand.
 - **Pages:** a mapping may have several pages of control-to-parameter assignments. How the
   user switches pages is defined per controller (in the mapping or the driver; an open
   question), not by the Add On's core.
@@ -185,10 +193,22 @@ extending `CanonicalMidiMap` there:
   control-to-parameter assignments from the bundled library, checked against the
   parameters LUNA reports. Nothing in it is controller-specific.
 - **Targeting.** Decides which channel and insert slot the controller drives, and announces
-  changes. Its strategy comes out of the targeting spike.
-- **Parameter writer.** Applies events to `slot.params` with touch semantics: a touch held
-  across a continuous gesture (released after a short idle), and a single touched write for a
-  button.
+  changes. It fails closed: when the target is ambiguous (several candidate inserts, the same
+  plugin on several slots) or disappears (insert removed or replaced, track deleted), writes
+  are suspended and the panel says why. The prototype starts with an insert chosen
+  explicitly in the panel; automatic following is enabled only where live tests show an
+  unambiguous signal. Explicit choice is a prototype step, not the release workflow: it
+  would be per-session setup, which the anti-goal rules out.
+- **Parameter writer.** Applies events to `slot.params` with an explicit touch lifecycle:
+  - A continuous gesture opens a touch (`control.begin()`) bound to the parameter *instance*
+    that received it, and releases it (`end()`) after a short idle. A button is a single
+    touched write.
+  - On a target change, page change, insert removal or controller disconnect, every open
+    touch is released on its own parameter and queued MIDI for the old assignment is
+    dropped, never applied to the new one.
+  - Absolute controls (faders, absolute knobs) use pickup after a reassignment: no write
+    until the control crosses the parameter's current value, so nothing jumps. Relative
+    encoders need no pickup.
 - **Panel UI.** Shows the target plugin, the current page, what each control does, and plain
   statements when there is no mapping or a mapping does not match the plugin.
 
@@ -197,7 +217,38 @@ extending `CanonicalMidiMap` there:
 The Add On bundles the library at build time and reads nothing from the network at run time,
 so it needs no manifest `network` entry and works offline. A library change reaches users
 through a new luna-addons release. Whether the bundle comes from a published
-`@audiocontrol/canonical-midi-maps` or a git dependency is the builder's call.
+`@audiocontrol/canonical-midi-maps` or a git dependency is the builder's call, but CI pins
+the audiocontrol revision it builds from.
+
+The build compiles source maps into a bundle keyed by LUNA `plugin_id`, so the run-time lookup
+is exact whatever identity the source maps carry (open question 4 decides only how the
+compile step resolves ids). The map contract is versioned; the build refuses a map whose
+contract version it does not support, and build-checks every map on the release coverage
+list.
+
+## Release gates
+
+Prove these live, on the development Mac, before a release. The main risk is a plausible MIDI
+event changing the wrong plugin, page or parameter without the user noticing.
+
+1. **Targeting:** duplicate plugin instances, several open editors, track changes, and
+   in-place plugin replacement each either target correctly or suspend writes with a stated
+   reason.
+2. **Paging:** after a page or mode change, the driver knows the active page before it
+   accepts the first control event. Page changes and controller reconnects are tested.
+3. **Bridge coexistence:** starting and stopping the Rust bridge while the Add On runs leaves
+   the Add On working, or the conflict is stated plainly.
+4. **No remapping:** the one-time controller setup is written down, and opening a new session
+   needs no remapping.
+5. **Touch:** a normal turn is one undo step; it records in an automation-writing mode;
+   switching target mid-gesture releases the old parameter cleanly; reassignment causes no
+   jump.
+6. **Coverage:** every combination on the release list is validated live, indexes and names
+   included, for each supported format.
+
+The first live step is one LCXL3 and one explicitly chosen insert in a disposable session:
+prove a knob move gives the expected write, undo step and automation, then switch pages and
+inserts mid-gesture. Its results feed the targeting and schema decisions.
 
 ## Repo shape
 
@@ -232,8 +283,8 @@ no git hooks, no AI attribution in commits or PRs.
    manufacturer, name and format.
 5. **Page switching.** For each controller, whether the page mechanism is described in the
    mapping or fixed in the driver.
-6. **Coexisting with the Rust bridge.** If both run, which owns the LCXL3; custom mode may
-   make this moot.
+6. **Coexisting with the Rust bridge.** If both run, which owns the LCXL3. Plain custom mode
+   may make this moot; reliable page tracking may require DAW mode, which would not.
 7. **How much of `controller-workflow` to keep** for the layout-editing side, and whether a
    LUNA deployer belongs there.
 8. **Add On name.** "Controller Maps" is a working name and must stay free of brand names.
