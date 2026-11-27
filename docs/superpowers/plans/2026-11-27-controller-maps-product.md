@@ -61,8 +61,19 @@ section (PR #5) and the DAW-mode decision (PR #4). Merge #4 and #5 before execut
   Encoders are kept in step by value push, not relative mode. Note addresses, relative
   encoders and value ranges are added when a controller needs them, under a new contract
   number.
-- **Play and Record are always transport:** `session.transport.toggle()` and
-  `toggleRecord()`. Maps can't assign them.
+- **Which control does what is decided when the map is edited, never in the Add On.** The
+  Add On holds no CC numbers and reserves no controls. Control addresses come from the
+  surface profile. Every role comes from data authored in the editor:
+  - parameters per page, from the plugin's map;
+  - `navigation` (next, optional previous) and `transport` (play, record), from the
+    surface's layout file. These don't depend on the plugin, so they keep working on an
+    unmapped insert.
+
+  Each layout role is a `ButtonBinding`: a button press, optionally made while another
+  button is held. The Add On carries out what the data names: `session.transport.toggle()` and `toggleRecord()` for
+  transport, and page changes for navigation. The only LCXL3 knowledge in Add On code is
+  its DAW-mode protocol: claim and release, mode reports, display text, LEDs and encoder
+  push.
 - **A page that doesn't match LUNA is refused whole.** Any assignment whose parameter id is
   missing, or whose name differs from LUNA's, makes the panel list the mismatches, and no
   control on that page writes.
@@ -72,13 +83,13 @@ section (PR #5) and the DAW-mode decision (PR #4). Merge #4 and #5 before execut
   Strip`). The automatic rule (newest window on the focused track) comes in a later plan,
   after its live test. Even then, the picker remains the way to settle a case the rule
   refuses, such as two editors open on one track.
-- **Paging uses buttons that reach the host.** The LCXL3's Page buttons never reach the
-  host in DAW mode, so a map's `navigation.next_page` names a host-visible button
-  (`button_side` in the starter map). Shift held with that button goes to the previous
-  page, for every map. That needs no second button, and Shift can't be assigned. Each page
-  change shows `<page name> <n>/<total>` on the display overlay. The panel shows the page,
-  names the buttons that change it, and has Previous and Next buttons of its own. Play and
-  Record stay transport on every page.
+- **Paging is whatever the layout's `navigation` says.** The Add On only requires that a
+  binding names buttons the surface profile defines. The LCXL3's Page buttons never reach
+  the host in DAW mode, so the profile doesn't list them and the editor can't offer them.
+  Each page change shows `<page name> <n>/<total>` on the display overlay. The panel shows
+  the page, names the bindings that change it (taken from the layout), and has Previous and
+  Next buttons of its own. Layout bindings, transport included, work the same on every
+  page and for every plugin.
 - **The Add On can hand the controller back.** The panel has Release controller, which
   turns off the LEDs the Add On lit and sends DAW mode off, and Reclaim controller, which
   claims it again and waits for the mode echo. A full handoff to the Rust bridge, with the
@@ -140,16 +151,26 @@ export interface SurfaceControl { id: string; kind: SurfaceControlKind; address:
 export interface SurfaceProfile { contract: 2; surface: string; device: { manufacturer: string; model: string }; controls: SurfaceControl[] }
 export interface Assignment { control: string; parameter: { id: string; name: string }; mode?: 'toggle' | 'momentary' }
 export interface MapPage { name: string; assignments: Assignment[] }
+// A button press, optionally while another button is held (`with`). Both are surface control ids.
+export interface ButtonBinding { control: string; with?: string }
+// Plugin-independent roles for one surface, authored in the layout editor. Active whatever
+// plugin is targeted, mapped or not. A host never chooses these.
+export interface SurfaceLayout {
+  contract: 2; version: string; surface: string; kind: 'layout';
+  navigation: { next_page: ButtonBinding; previous_page?: ButtonBinding };
+  transport?: { play?: ButtonBinding; record?: ButtonBinding };
+}
 export interface ControllerMap {
   contract: 2; version: string; surface: string;
   metadata: { name: string; description?: string; author?: string };
   plugin: { manufacturer: string; name: string; luna_plugin_ids: string[] };
-  navigation: { next_page: string; previous_page?: string };
   pages: MapPage[];
 }
 export type ParseResult<T> = { ok: true; value: T } | { ok: false; errors: string[] };
 export function parseSurfaceProfile(yaml: string): ParseResult<SurfaceProfile>;
-export function parseControllerMap(yaml: string, surface: SurfaceProfile): ParseResult<ControllerMap>;
+export function parseSurfaceLayout(yaml: string, surface: SurfaceProfile): ParseResult<SurfaceLayout>;
+// A page assignment may not use a control the layout binds (as `control` or `with`).
+export function parseControllerMap(yaml: string, surface: SurfaceProfile, layout: SurfaceLayout): ParseResult<ControllerMap>;
 export function contractOf(yaml: string): number | undefined; // the top-level `contract`, or undefined
 ```
 
@@ -159,7 +180,12 @@ export function contractOf(yaml: string): number | undefined; // the top-level `
 - [ ] **Step 2: Write the failing tests** in `contract-2.test.ts`:
   - `parseControllerMap rejects a control id the surface does not define`: errors contain
     `pages[0].assignments[0].control: "encoder_9_9" is not a control of surface "lcxl3-daw"`.
-  - `rejects a navigation control that is not a button`.
+  - `parseSurfaceLayout rejects a binding, or its "with" control, that is not a button`.
+  - `parseSurfaceLayout rejects two bindings that are the same press` (same control, same
+    `with`).
+  - `parseControllerMap rejects a page assignment to a control the layout binds`: errors
+    contain `pages[1].assignments[3].control: "button_side" is bound by the layout
+    (navigation.next_page)`. The same holds for a `with` control.
   - `rejects two assignments to one control on a page`.
   - `rejects mode on a non-button assignment`.
   - `rejects an empty luna_plugin_ids`.
@@ -177,6 +203,7 @@ export function contractOf(yaml: string): number | undefined; // the top-level `
 
 **Files:**
 - Create: `modules/canonical-midi-maps/maps/novation-launch-control-xl-3/daw/surface.yaml`,
+  `modules/canonical-midi-maps/maps/novation-launch-control-xl-3/daw/layout.yaml`,
   `modules/canonical-midi-maps/maps/novation-launch-control-xl-3/daw/ua-api-vision.yaml`
 - Test: `modules/canonical-midi-maps/src/contract-2-maps.test.ts`
 
@@ -192,13 +219,19 @@ export function contractOf(yaml: string): number | undefined; // the top-level `
   - `button_side`: channel 1, CC 104;
   - `play`: channel 1, CC 116;
   - `record`: channel 1, CC 118;
-  - `shift`: channel 7, CC 63 (the Add On's page modifier; maps can't assign it).
+  - `shift`: channel 7, CC 63.
+
+  The ids name physical controls only. Roles such as transport or paging belong to the
+  layout.
+  The physical position of CC 104 isn't confirmed, so confirm which button sends it before
+  naming it in the profile (`button_side` is a placeholder).
 
 - [ ] **Step 1: Write the failing test.** Every YAML with `contract: 2` under `maps/` parses
   against its surface. `surface.yaml` has 24 encoders, 8 faders, 17 buttons, the two
-  transport buttons and `shift`, 52 controls in all. The API Vision map has
-  `luna_plugin_ids: [uaudio_api_vision_ext]`, `navigation.next_page: button_side`, and two
-  pages named `Channel` and `560 EQ`.
+  transport buttons and `shift`, 52 controls in all. `layout.yaml` parses against the
+  surface and has `navigation.next_page`. The API Vision map has `luna_plugin_ids:
+  [uaudio_api_vision_ext]` and two pages named `Channel` and `560 EQ`, and it parses
+  against the surface and the layout.
 - [ ] **Step 2: Run it.** Expected: FAIL, the files don't exist.
 - [ ] **Step 3: Write `surface.yaml` and a starter `ua-api-vision.yaml`.** It has two pages,
   using only parameter ids LUNA reported live. Page 1, "Channel":
@@ -215,6 +248,11 @@ export function contractOf(yaml: string): number | undefined; // the top-level `
   - encoder row 2, columns 1-2: `560_63hz`, `560_31hz`;
   - `fader_1`: `line_gain`; `fader_8`: `level`, the same as page 1;
   - `button_top_1`: `eq_on`, toggle.
+
+  Also write `layout.yaml`, as a starter for the layout editor to replace:
+  `navigation.next_page: {control: button_side}`,
+  `navigation.previous_page: {control: button_side, with: shift}`,
+  `transport.play: {control: play}`, `transport.record: {control: record}`.
 
   The 560 bands only show in the plugin when its EQ Select is on 560. The map's
   description says so, because EQ Select is stepped and stays a mouse control.
@@ -255,10 +293,10 @@ Work on `feature/controller-maps-product` from `main`. Tests for each task run w
 export interface Bundle {
   contract: 2;
   audiocontrolRevision: string;
-  surfaces: Record<string, SurfaceControl[]>;
+  surfaces: Record<string, { controls: SurfaceControl[]; layout: SurfaceLayout }>; // key: surface id
   maps: Record<string, BundledMap>; // key: LUNA plugin id
 }
-export interface BundledMap { source: string; name: string; surface: string; navigation: { nextPage: string; previousPage?: string }; pages: MapPage[] }
+export interface BundledMap { source: string; name: string; surface: string; pages: MapPage[] }
 // src/bundle/compile.ts
 export interface SourceFile { path: string; text: string }
 export function compileBundle(files: SourceFile[], revision: string, coverage: string[]): Bundle; // throws with every problem listed
@@ -272,8 +310,9 @@ export function compileBundle(files: SourceFile[], revision: string, coverage: s
   - `ignores files without a contract field`.
   - `throws when a coverage plugin id has no map`: `coverage: no map for uaudio_y`.
   - `throws when a map names a surface no file defines`.
-  - `throws when a map assigns play, record or shift`: those are transport and the page
-    modifier in this Add On.
+  - `throws when a surface has no layout file, or more than one`.
+  - `carries the layout's bindings through unchanged`. The compiler adds no roles of its
+    own, so a layout without `transport` gives no transport.
 - [ ] **Step 2: Run them.** Expected: FAIL, the module is missing.
 - [ ] **Step 3: Implement `compileBundle`.** Then implement `build-bundle.ts`, which:
   1. reads every `*.yaml` under `vendor/audiocontrol/modules/canonical-midi-maps/maps/`;
@@ -362,7 +401,9 @@ Bytes (`lcxl3-bytes.ts`):
     and no events are emitted.
   - `Mixer counts as ready` (`B6 1E 01`).
   - `buttons give press and release` (`B0 25 7F`, then `B0 25 00`).
-  - `shift gives press and release` (`B6 3F 7F`, then `B6 3F 00`) as control `shift`.
+  - `a channel-7 button gives press and release`: a surface fixture's control on channel
+    7, CC 63 (`B6 3F 7F`, then `B6 3F 00`) arrives under its surface id. The driver turns
+    addresses into ids from the profile and gives no control a role.
   - `missing device`: with no `LCXL3 1 DAW Out`, the status is `disconnected`, and the
     reason lists LUNA's device names.
   - `reconnect re-claims`: remove the device, then add it back (as `luna.midiDevices`
@@ -450,12 +491,16 @@ export function createTargeting(session: Luna.Session): Targeting;
 - Test: `tests/transport.test.ts`
 
 **Interfaces:**
-- Produces: `export function bindTransport(session: Luna.Session, driver: ControllerDriver): Luna.Unsubscribe;`
+- Produces: `export function bindTransport(session: Luna.Session, driver: ControllerDriver, transport: SurfaceLayout['transport']): Luna.Unsubscribe;`
 
 - [ ] **Step 1: Write the failing tests:**
-  - A `play` press calls `transport.toggle()`; a `record` press calls `toggleRecord()`.
-  - LEDs follow `transport.playing`: Play is palette `0x21` while playing and `0x27` when
-    stopped. They also follow `recordEnabled`: Record is `0x05` when armed and `0x07` when
+  - The layout's `transport.play` binding calls `transport.toggle()`, and its
+    `transport.record` binding calls `toggleRecord()`. With a fixture layout that binds play
+    to `button_bottom_8`, pressing `play` does nothing.
+  - `no transport in the layout binds nothing`.
+  - `transport works with no target`: no plugin chosen, and play still toggles.
+  - LEDs follow `transport.playing` on the bound control: palette `0x21` while playing and
+    `0x27` when stopped. They also follow `recordEnabled`: `0x05` when armed and `0x07` when
     not (the colours the bridge uses).
 - [ ] **Step 2: Run them.** Expected: FAIL. **Step 3: Implement.** **Step 4: Run them.**
   Expected: PASS. **Step 5: Commit and push.**
@@ -487,8 +532,12 @@ export function createApp(luna: Luna.Client, session: Luna.Session, bundle: Bund
     `550_hf_freq`.
   - `next_page cycles the page and shows "560 EQ 2/2" on the overlay`, releasing any open
     touch.
-  - `shift with next_page goes to the previous page`, and pressing shift alone writes
-    nothing.
+  - `the layout's previous_page binding goes back`: with the starter layout, `shift` held
+    and then `button_side` goes to the previous page, and pressing `shift` alone writes
+    nothing. A fixture layout that binds previous to another button changes the behaviour
+    with no code change.
+  - `an unmapped insert keeps transport`: with no map, paging does nothing and the layout's
+    transport still works.
   - `page(-1) and page(1) match the buttons`.
   - `release stops writes and sends DAW mode off; reclaim waits for the echo`. A knob move
     after release writes nothing, and the status reads "Released: Reclaim controller to use
@@ -525,7 +574,9 @@ export function panelModel(state: AppState, session: Luna.Session): PanelModel;
   - the mismatch list;
   - one row per binding;
   - `target`: `Vocal · effect_2 · API Vision Channel Strip`;
-  - `page`: `560 EQ (2 of 2)`; `paging`: `Next: side button · Previous: Shift + side button`;
+  - `page`: `560 EQ (2 of 2)`; `paging` is written from the layout's bindings, using
+    surface control ids, so the starter layout gives `Next: button_side · Previous: shift +
+    button_side`;
   - `controller`: `release` while the driver is claimed, `reclaim` after release.
 
   The rendered panel also has Previous and Next buttons, which call `app.page`, and the
@@ -554,7 +605,8 @@ export function panelModel(state: AppState, session: Luna.Session): PanelModel;
 - [ ] **Step 2: Walk the release gates with Orion, and record each result:**
   - **Gate 2:** the page is known before the first event; power-cycling the controller
     re-claims DAW mode. Without help, Orion finds page 2, tells what a knob controls from
-    the display, returns to page 1 with Shift + side button, and Play and Record still work.
+    the display, returns to page 1 with the layout's previous binding, and Play and Record
+    still work.
   - **Gate 4:** from a fresh session, with the Add On installed and the controller already
     set up, no remapping is needed.
   - **Gate 5:** undo is one step per turn; Touch automation records; a target change
