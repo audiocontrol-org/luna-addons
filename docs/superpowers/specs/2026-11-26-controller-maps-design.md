@@ -291,9 +291,8 @@ The first spikes answered some of these; see
    ([findings](../../spikes/2026-11-26-controller-maps-findings.md#4-plugin-identity)).*
 5. **Page switching.** For each controller, whether the page mechanism is described in the
    mapping or fixed in the driver. *For the LCXL3, transport buttons only work in DAW mode
-   and are dead in every custom mode. Leaning to DAW mode with the built-in layouts and
-   paging owned by the add-on; the alternative is a page per custom mode, each with its own
-   addresses, without transport
+   and are dead in every custom mode. Decided (Orion): DAW mode with the built-in layouts
+   and paging owned by the add-on. Custom modes are not used for LUNA
    ([findings](../../spikes/2026-11-26-controller-maps-findings.md#5-page-switching)).*
 6. **Coexisting with the Rust bridge.** If both run, which owns the LCXL3. Plain custom mode
    may make this moot; reliable page tracking may require DAW mode, which would not.
