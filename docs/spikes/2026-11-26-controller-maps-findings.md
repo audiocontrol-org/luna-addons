@@ -206,3 +206,52 @@ On the UAD API Vision (`spike-write.ts`, LCXL3 knobs to Line Gain and 550 LF Gai
   a parameter such as Mic Gain? Is calling `begin()` on one harmless?
 - **Third-party plugin stability.** One plugin's crash in LUNA took the session down. Should
   the release list leave out plugins with a crash history in LUNA?
+
+## LCXL3 in DAW mode
+
+Measured with `lcxl3-daw-features.ts` and `display-retry.ts`, after deciding the LCXL3
+driver holds DAW mode. Byte reference: audiocontrol's midi-macro-bridge research
+(`lcxl3-cc-map.md`), which decodes Novation's programmer's reference.
+
+- **The control map matches the reference.** Every control sends on the DAW port:
+  - faders: channel 16, CC 5-12;
+  - encoders: channel 16, CC 13-36 (with all rows set to absolute);
+  - the two rows of fader buttons: channel 1, CC 37-52;
+  - Play and Record: channel 1, CC 116 and 118;
+  - the button left of fader 1: channel 1, CC 104;
+  - Shift: channel 7, CC 63.
+- **Mixer and Control layouts send the same CCs.** Only the mode report tells them apart.
+- **Some controls never reach the host.** The Page and Track buttons and the Solo/Arm and
+  Mute/Select toggles sent nothing in either layout. The device uses them, with the fader
+  buttons, to change mode itself. The user can reach custom modes this way while DAW mode is
+  on, which corrects the earlier reading.
+- **Every mode change is reported.** It arrives on channel 7 as CC 30, always paired with a
+  CC 31 whose meaning is unknown. So the add-on always knows the mode, and can suspend writes
+  when a custom mode is selected.
+- **A power cycle drops DAW mode silently.** After the controller restarted, the add-on
+  received nothing. Claiming DAW mode again restored it. The driver must notice a reconnect
+  and claim DAW mode again (release gate 2).
+- **Encoders take a pushed position.** Encoder 1 was last at 53. After the host sent it 64,
+  the next nudge sent 65. So the add-on can keep each encoder in step with its parameter,
+  which gives pickup for the encoders. Faders have a device pickup setting (channel 7 CC 70)
+  that is untested.
+- **The display shows host text.**
+  - Text sent to encoder 1's display slot ("Line Gain") shows whenever that encoder is
+    touched, so each encoder can carry its parameter's name.
+  - Overlay text ("LUNA PAGE 1") showed.
+  - The permanent display wasn't seen: the screen stays dark until a control moves.
+- **LED colours work by palette index.** Play lit green, Record red and Page Up yellow. All
+  the fader buttons showed blue after only the first was sent blue, so blue may be their
+  default in DAW mode. After DAW mode was released, the first button lit white: that is
+  standalone mode marking custom mode 1 as selected, not LED state left over from DAW mode.
+
+**Suggests for the LCXL3 driver:**
+
+- Hold DAW mode, select the Control layout, and set encoder rows to absolute.
+- Re-claim DAW mode on reconnect.
+- Treat a custom-mode report as "not ours": suspend writes and say so.
+- Push each encoder's parameter value on every page or target change.
+- Name each encoder on the display, and use the overlay for the page name.
+- Paging can't use the Page buttons, because the device keeps them. It needs controls that
+  reach the host, such as CC 104 or Shift with a fader button. That choice belongs to the
+  layout, so it goes in the map.
