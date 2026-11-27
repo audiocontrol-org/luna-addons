@@ -40,8 +40,8 @@ section (PR #5) and the DAW-mode decision (PR #4). Merge #4 and #5 before execut
 - Files under 500 lines.
 - No fallbacks or mock data outside tests. A missing input (no device, no target, no map, a
   name mismatch) throws, or puts a stated reason in the panel; nothing picks a default.
-- No git hooks in luna-addons. In audiocontrol, its existing gates run as they are and are
-  never bypassed (`--no-verify` is forbidden).
+- No git hooks in either repo. In audiocontrol, run `make gates` before every commit and
+  before opening the PR, and fix whatever it reports (audiocontrol AGENTS.md §"Gates").
 - No AI or Claude attribution in commits or PRs. Commit each logical unit and push.
 - Never put `#` inside heredocs or multi-line quoted arguments (use the Write tool and `-F`);
   never write files with `sed`; prefer a script file over a complex one-liner.
