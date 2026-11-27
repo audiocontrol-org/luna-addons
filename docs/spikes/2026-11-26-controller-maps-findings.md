@@ -224,12 +224,10 @@ driver holds DAW mode. Byte reference: audiocontrol's midi-macro-bridge research
   - The permanent display wasn't seen: the screen stays dark until a control moves.
 - **LED colours work by palette index.** Play lit green, Record red and Page Up yellow. All
   the fader buttons showed blue after only the first was sent blue, so blue may be their
-  default in DAW mode. After DAW mode was released, that first button stayed lit white, as
-  standalone mode shows any non-zero LED value. LED state set in DAW mode seems to outlive it.
+  default in DAW mode. After DAW mode was released, the first button lit white: that is
+  standalone mode marking custom mode 1 as selected, not LED state left over from DAW mode.
 
 **Suggests for the LCXL3 driver:**
-
-- Switch off every LED it lit before releasing DAW mode.
 
 - Hold DAW mode, select the Control layout, and set encoder rows to absolute.
 - Re-claim DAW mode on reconnect.
