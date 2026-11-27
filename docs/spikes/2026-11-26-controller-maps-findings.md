@@ -113,19 +113,36 @@ nothing tested so far gives a reliable way to work them out from manufacturer an
   device switches and echoes the message. In that mode, controls send on the MIDI port exactly
   as in standalone.
 
-**Answer:** for the LCXL3, the page has to be known by the host, which means DAW mode with the
-host selecting the custom mode. In standalone, the host can't tell which page is active.
+**Answer, revised after review:** the host can know the page in two ways, and transport decides
+between them.
 
-**Suggests:** the driver owns paging. It claims DAW mode, selects the custom mode for each
-page, and therefore always knows the active page (release gate 2). The map lists its pages;
-the driver decides how the user moves between them. Whether that mechanism lives in the map
-or in the driver is still open for other controllers.
+- **Page by address.** If every custom mode is written with its own MIDI addresses (a channel
+  per page, say), each event identifies its page and no mode report is needed. This was
+  missed in the first reading of the results. That custom modes 2 onwards send what they are
+  written with is unchecked.
+- **DAW mode.** The host turns DAW mode on and owns the page. The controller's transport and
+  navigation buttons only work in DAW mode. In DAW mode the log shows messages standalone
+  never sent (DAW port: channel 1 CC 102, 103, 106 and 107, a few CCs on channel 7, and a
+  jog-like CC 5 on channel 16). The user knows that transport buttons are dead in every
+  custom mode, including one the host selects. So the two can't be combined: a custom-mode
+  page and working transport never happen at the same time.
+
+**Suggests:** if transport is wanted from the controller, the LCXL3 driver holds DAW mode and
+uses the controller's built-in DAW layouts (Mixer and Control, reported as `B6 1E 01` and
+`02`), not custom modes. Paging is then the add-on's own: pages live only in the map, the
+driver changes page in response to buttons it reads, and so it always knows the page (release
+gate 2). Nothing is written to the controller for LUNA. Still to measure: what each control
+sends in the Mixer and Control layouts, and whether the display and LEDs can show the page.
+Whether the page mechanism lives in the map or the driver stays open for other controllers.
 
 ## 6. Coexisting with the Rust bridge
 
-**Not measured.** The probes ran with the Rust `midi-macro-bridge` stopped. Question 5's
-answer makes this question matter: the add-on will claim DAW mode, which the bridge also uses.
-It stays open, and becomes its own spike under release gate 3.
+**Not measured; set aside by assumption.** The probes ran with the Rust `midi-macro-bridge`
+stopped. DAW mode is a setting of the whole controller: either host turning it off, or
+choosing a layout, changes it for the other, and both receive every control. For now the
+working assumption is that the bridge and the add-on are never used at the same time, so the
+add-on may own DAW mode. Release gate 3 then asks only that the conflict is stated plainly if
+both run.
 
 ## 7. How much of `controller-workflow` to keep
 
@@ -167,10 +184,11 @@ On the UAD API Vision (`spike-write.ts`, LCXL3 knobs to Line Gain and 550 LF Gai
 
 1. **Targeting:** the signals it needs are measured (question 1). The fail-closed rule isn't
    built yet, so it hasn't been proven.
-2. **Paging:** the mechanism is found. In DAW mode, the host selects and echoes the custom
-   mode, so the driver can know the page before the first event. Page changes and
-   reconnects in a running add-on aren't tested.
-3. **Bridge coexistence:** not tested.
+2. **Paging:** two workable mechanisms are found (question 5). With DAW mode and paging owned
+   by the add-on, the driver knows the page because it sets it. Page changes and reconnects
+   in a running add-on aren't tested.
+3. **Bridge coexistence:** not tested. The working assumption is that the two never run
+   together; the add-on must still say so plainly if they do.
 4. **No remapping:** device names are exact and the same in every session. Opening a new
    session needed no MIDI setup in LUNA beyond letting LUNA see the controller. The written
    one-time setup is still to do.
@@ -188,3 +206,52 @@ On the UAD API Vision (`spike-write.ts`, LCXL3 knobs to Line Gain and 550 LF Gai
   a parameter such as Mic Gain? Is calling `begin()` on one harmless?
 - **Third-party plugin stability.** One plugin's crash in LUNA took the session down. Should
   the release list leave out plugins with a crash history in LUNA?
+
+## LCXL3 in DAW mode
+
+Measured with `lcxl3-daw-features.ts` and `display-retry.ts`, after deciding the LCXL3
+driver holds DAW mode. Byte reference: audiocontrol's midi-macro-bridge research
+(`lcxl3-cc-map.md`), which decodes Novation's programmer's reference.
+
+- **The control map matches the reference.** Every control sends on the DAW port:
+  - faders: channel 16, CC 5-12;
+  - encoders: channel 16, CC 13-36 (with all rows set to absolute);
+  - the two rows of fader buttons: channel 1, CC 37-52;
+  - Play and Record: channel 1, CC 116 and 118;
+  - the button left of fader 1: channel 1, CC 104;
+  - Shift: channel 7, CC 63.
+- **Mixer and Control layouts send the same CCs.** Only the mode report tells them apart.
+- **Some controls never reach the host.** The Page and Track buttons and the Solo/Arm and
+  Mute/Select toggles sent nothing in either layout. The device uses them, with the fader
+  buttons, to change mode itself. The user can reach custom modes this way while DAW mode is
+  on, which corrects the earlier reading.
+- **Every mode change is reported.** It arrives on channel 7 as CC 30, always paired with a
+  CC 31 whose meaning is unknown. So the add-on always knows the mode, and can suspend writes
+  when a custom mode is selected.
+- **A power cycle drops DAW mode silently.** After the controller restarted, the add-on
+  received nothing. Claiming DAW mode again restored it. The driver must notice a reconnect
+  and claim DAW mode again (release gate 2).
+- **Encoders take a pushed position.** Encoder 1 was last at 53. After the host sent it 64,
+  the next nudge sent 65. So the add-on can keep each encoder in step with its parameter,
+  which gives pickup for the encoders. Faders have a device pickup setting (channel 7 CC 70)
+  that is untested.
+- **The display shows host text.**
+  - Text sent to encoder 1's display slot ("Line Gain") shows whenever that encoder is
+    touched, so each encoder can carry its parameter's name.
+  - Overlay text ("LUNA PAGE 1") showed.
+  - The permanent display wasn't seen: the screen stays dark until a control moves.
+- **LED colours work by palette index.** Play lit green, Record red and Page Up yellow. All
+  the fader buttons showed blue after only the first was sent blue, so blue may be their
+  default in DAW mode. After DAW mode was released, the first button lit white: that is
+  standalone mode marking custom mode 1 as selected, not LED state left over from DAW mode.
+
+**Suggests for the LCXL3 driver:**
+
+- Hold DAW mode, select the Control layout, and set encoder rows to absolute.
+- Re-claim DAW mode on reconnect.
+- Treat a custom-mode report as "not ours": suspend writes and say so.
+- Push each encoder's parameter value on every page or target change.
+- Name each encoder on the display, and use the overlay for the page name.
+- Paging can't use the Page buttons, because the device keeps them. It needs controls that
+  reach the host, such as CC 104 or Shift with a fader button. That choice belongs to the
+  layout, so it goes in the map.
