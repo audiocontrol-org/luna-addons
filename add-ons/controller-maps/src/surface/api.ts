@@ -19,6 +19,11 @@ export interface SurfaceControlInfo {
   follows: boolean;
 }
 
+// R7: follow, label, announce and indicate send only while the status is `ready`. In any other
+// state they resolve without sending anything (they still reject a request that is wrong in
+// itself, such as an unknown control or a template the surface lacks). Nothing is queued for
+// later: core sends its whole state again (follows, labels, indications) each time the status
+// becomes `ready`.
 export interface Surface {
   claim(): Promise<void>;
   release(): Promise<void>; // clears every indication, then the profile's release sequence
