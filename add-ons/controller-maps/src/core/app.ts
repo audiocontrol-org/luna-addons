@@ -2,7 +2,7 @@
 // around an injected Surface. It speaks only the Surface's semantic vocabulary; it never builds
 // a surface and never sees a surface definition. Bindings are rebuilt whenever the target, its
 // plugin, the page or the surface's readiness changes. Every failure goes through one sink that
-// forwards to the injected `record` and keeps the latest few for the panel.
+// forwards to the injected record function and keeps the latest few for the panel.
 import type { Bundle } from '@/bundle/types';
 import { buildBindings } from '@/core/bindings';
 import type { Resolution } from '@/core/resolve';

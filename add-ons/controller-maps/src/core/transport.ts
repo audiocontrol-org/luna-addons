@@ -1,7 +1,7 @@
 // Transport: the layout's transport.play / transport.record roles drive LUNA's transport, and
 // the surface is asked to indicate transport state. Roles and indications only; what a role is
 // bound to and what an indication looks like is surface data. Failures from LUNA or the surface
-// are reported through `record`, never swallowed.
+// are reported through the injected sink, never swallowed.
 import type { Surface } from '@/surface/api';
 
 export function bindTransport(
