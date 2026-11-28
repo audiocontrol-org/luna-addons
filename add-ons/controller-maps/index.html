@@ -8,11 +8,27 @@
     body { margin: 0; background: #151515; color: #ddd; font: 14px -apple-system, Helvetica, sans-serif; }
     main { padding: 12px 14px; }
     #status { color: #999; }
+    #status:empty { display: none; }
+    .head > div { margin-bottom: 4px; }
+    .status { font-weight: 600; }
+    .target, .page { color: #ccc; }
+    .paging { color: #888; font-size: 12px; }
+    .actions { margin: 8px 0; display: flex; gap: 6px; }
+    button { background: #2a2a2a; color: #ddd; border: 1px solid #444; border-radius: 4px; padding: 4px 10px; font: inherit; cursor: pointer; }
+    button:hover { background: #333; }
+    .rows { border-collapse: collapse; margin: 8px 0; }
+    .rows td { padding: 2px 12px 2px 0; }
+    .rows .control { color: #888; font-family: Menlo, monospace; font-size: 12px; }
+    .problems { color: #e8a25c; padding-left: 18px; }
+    .choices h2 { font-size: 13px; color: #999; font-weight: 600; margin: 14px 0 6px; }
+    .choice { margin-bottom: 6px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+    .choice .track { min-width: 80px; color: #bbb; }
   </style>
 </head>
 <body>
   <main>
     <div id="status">Connecting...</div>
+    <div id="panel"></div>
   </main>
   <script src="vendor/luna.global.js"></script>
   <!-- The bundle npm run build writes from src/: one classic script, never a module script. -->

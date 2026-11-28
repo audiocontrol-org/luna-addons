@@ -6,8 +6,9 @@ A LUNA Add On built with `@uaudio/luna-builder-sdk`, in TypeScript.
 |---|---|
 | `manifest.json` | What LUNA reads: id, name, window size, entry page. See the SDK's `docs/MANIFEST.md`. |
 | `index.html` | The page. Loads the vendored SDK bundle, then the built `dist/main.js`. |
-| `src/logic.ts` | Engine logic with no DOM. Tests run this against `Luna.MockEngine`. |
-| `src/main.ts` | DOM wiring: connect, follow the focused session, render. |
+| `src/wiring.ts` | The composition with no DOM: check the bundle, pick its surface, build it, start the app. |
+| `src/core/panel/` | The panel: a pure model of what it shows, a thin DOM render, and the track/insert watcher. |
+| `src/main.ts` | Entry point: connect, require a session, start the Add On, render the panel on every change. |
 | `dist/main.js` | What `npm run build` makes from `src/`: one classic script. Not hand-edited. |
 | `vendor/luna.global.js` | The SDK as a script-tag bundle (`globalThis.Luna`). Refreshed by `ua-builder pack`. |
 | `tests/` | Vitest, no LUNA required. `tests/setup.ts` defines the `Luna` global. |
