@@ -1,7 +1,8 @@
 // Keeps the panel's track and insert choices current: loads every track's inserts and calls
 // `onChange` when a track comes or goes, or an insert's plugin changes. A track whose inserts
-// fail to load goes to `failed`. Resolves once the tracks present at the start are loaded; the
-// returned function drops every listener.
+// fail to load goes to `failed`, on the first load as on later ones, and the others still load.
+// Resolves once the tracks present at the start are loaded; the returned function drops every
+// listener.
 export async function watchChoices(
   session: Luna.Session,
   onChange: () => void,
@@ -29,7 +30,12 @@ export async function watchChoices(
   };
 
   const load = async (track: Luna.Track): Promise<void> => {
-    await track.effects.load();
+    try {
+      await track.effects.load();
+    } catch (error) {
+      failed(error);
+      return;
+    }
     if (stopped || session.tracks.byId(track.id) !== track) return;
     watchTrack(track);
   };

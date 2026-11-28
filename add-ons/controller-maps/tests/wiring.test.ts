@@ -3,7 +3,7 @@
 // API Vision insert. The one core-facing test that sees bytes.
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Bundle } from '@/bundle/types';
 import { panelModel } from '@/core/panel/model';
 import { watchChoices } from '@/core/panel/watch';
@@ -26,7 +26,7 @@ afterEach(async () => {
   running = undefined;
 });
 
-async function rig() {
+async function prepare() {
   const bundle = loadBundle(raw);
   const definition = bundle.surfaces[surfaceIdOf(bundle.maps)];
   if (!definition) throw new Error('test: the bundle has no surface for its maps');
@@ -69,11 +69,17 @@ async function rig() {
     await settle();
   };
   const events: string[] = [];
-  running = await startAddOn({ luna, session, bundle, createSurface, record: (event) => { events.push(event); } });
-  await settle();
+  const record = (event: string): void => { events.push(event); };
   const sent = (): string[] => engine.midiSent.map((m) => toHex(m.sysex ?? m.bytes));
   const valueOf = (id: string): unknown => engine.value(`${slot.path}/controls/${id}`, 'normalized_value');
-  return { engine, session, running, receive, settle, sent, valueOf, events };
+  return { engine, luna, session, bundle, record, receive, settle, sent, valueOf, events };
+}
+
+async function rig() {
+  const p = await prepare();
+  running = await startAddOn({ luna: p.luna, session: p.session, bundle: p.bundle, createSurface, record: p.record });
+  await p.settle();
+  return { ...p, running };
 }
 
 describe('wiring', () => {
@@ -104,6 +110,36 @@ describe('wiring', () => {
     expect(r.sent().at(-1)).toBe('F0 00 20 29 02 15 02 00 F7');
     await r.receive('BF 0D 50');
     expect(r.valueOf('550_hf_freq')).toBe(0.5);
+  });
+
+  it('a failure after the claim stops the app and releases the surface, then rejects with it', async () => {
+    const p = await prepare();
+    let claimed: Running | undefined;
+    const failing = startAddOn({
+      luna: p.luna,
+      session: p.session,
+      bundle: p.bundle,
+      createSurface,
+      record: p.record,
+      afterClaim: async (r) => {
+        claimed = r;
+        await p.receive('B6 1E 02');
+        await r.app.targeting.choose('Vocal', 'effect_2');
+        await p.settle();
+        throw new Error('the panel could not be shown');
+      },
+    });
+    await expect(failing).rejects.toThrow('the panel could not be shown');
+    await p.settle();
+    if (!claimed) throw new Error('test: afterClaim never ran');
+    expect(claimed.surface.status().state).toBe('released');
+    expect(p.sent().at(-1)).toBe('F0 00 20 29 02 15 02 00 F7');
+    const count = p.sent().length;
+    await claimed.stop(); // a later stop (pagehide) does not release twice
+    await p.settle();
+    expect(p.sent().length).toBe(count);
+    await p.receive('BF 0D 50');
+    expect(p.valueOf('550_hf_freq')).toBe(0.5);
   });
 });
 
@@ -143,6 +179,39 @@ describe('watchChoices', () => {
     await bass.insert(VISION, 'effect_3');
     await flush();
     expect(changes).toBe(after);
+  });
+});
+
+describe('watchChoices on a failing load', () => {
+  it('a track whose inserts fail to load on the first sync goes to failed; the others still load', async () => {
+    const engine = new Luna.MockEngine();
+    engine.addSession('abc', { tracks: ['Vocal', 'Bass'], name: 'Demo' });
+    engine.addPlugin(VISION, { name: 'API Vision Channel Strip' });
+    await engine.settled();
+    const luna = await Luna.connect({ port_: engine.port() });
+    const session = await luna.session();
+    await session.ready();
+    await luna.plugins.load();
+    const vocal = session.tracks.byId('Vocal');
+    const bass = session.tracks.byId('Bass');
+    if (!vocal || !bass) throw new Error('test: tracks missing');
+    await bass.effects.load();
+    await bass.insert(VISION, 'effect_0');
+    await engine.settled();
+    vi.spyOn(vocal.effects, 'load').mockRejectedValue(new Error('Vocal inserts unavailable'));
+    const failures: unknown[] = [];
+    let changes = 0;
+    const off = await watchChoices(session, () => { changes += 1; }, (error) => { failures.push(error); });
+    expect(failures.map((e) => (e instanceof Error ? e.message : String(e)))).toEqual(['Vocal inserts unavailable']);
+    const before = changes;
+    await bass.insert(VISION, 'effect_1');
+    for (let i = 0; i < 4; i++) {
+      await engine.settled();
+      await luna.settled();
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    expect(changes).toBeGreaterThan(before);
+    off();
   });
 });
 

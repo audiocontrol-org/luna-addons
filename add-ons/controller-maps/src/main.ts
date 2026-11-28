@@ -10,7 +10,7 @@ import { panelModel } from '@/core/panel/model';
 import { render, type PanelHandlers } from '@/core/panel/render';
 import { watchChoices } from '@/core/panel/watch';
 import { createSurface } from '@/surface/runtime/create';
-import { loadBundle, startAddOn } from '@/wiring';
+import { loadBundle, startAddOn, type Running } from '@/wiring';
 
 const NO_SESSION = 'Open a session in LUNA';
 const PANEL_FAILURES_KEPT = 5;
@@ -72,9 +72,19 @@ async function start(): Promise<void> {
   showStatus('Loading...');
   await luna.plugins.load(); // the catalog names the plugins the panel shows
   const bundle = loadBundle(generated);
-  const running = await startAddOn({ luna, session, bundle, createSurface, record });
+  const panel = element('panel'); // before the claim: a missing element must not strand it
+  await startAddOn({ luna, session, bundle, createSurface, record, afterClaim: (running) => showPanel(luna, session, running, panel) });
+}
+
+// Runs once the surface is claimed. startAddOn stops the app and releases the surface if this
+// throws; the listeners it added are dropped first.
+async function showPanel(luna: Luna.Client, session: Luna.Session, running: Running, panel: HTMLElement): Promise<void> {
   const { app, surface } = running;
-  const panel = element('panel');
+  const offs: Luna.Unsubscribe[] = [];
+  window.addEventListener('pagehide', () => {
+    for (const off of offs) off();
+    running.stop().catch((error: unknown) => { record('stop-failed', { error }); });
+  }, { once: true });
   let panelFailures: readonly string[] = [];
 
   const paint = (): void => {
@@ -95,21 +105,18 @@ async function start(): Promise<void> {
     failed,
   };
 
-  const offs: Luna.Unsubscribe[] = [
-    app.onChange(paint),
-    surface.onStatus(paint),
-    await watchChoices(session, paint, (error) => { failed('choices', error); }),
-    luna.status.onChange(() => {
+  try {
+    offs.push(app.onChange(paint), surface.onStatus(paint));
+    offs.push(await watchChoices(session, paint, (error) => { failed('choices', error); }));
+    offs.push(luna.status.onChange(() => {
       showStatus(luna.status.value === 'disconnected' ? 'Reconnecting...' : '');
-    }),
-  ];
-  showStatus('');
-  paint();
-
-  window.addEventListener('pagehide', () => {
-    for (const off of offs) off();
-    running.stop().catch((error: unknown) => { record('stop-failed', { error }); });
-  }, { once: true });
+    }));
+    showStatus('');
+    paint();
+  } catch (error) {
+    for (const off of offs.splice(0)) off();
+    throw error;
+  }
 }
 
 start().catch((error: unknown) => {

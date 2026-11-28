@@ -12,7 +12,7 @@ export type RecordSink = (event: string, detail: unknown) => void;
 export interface Running {
   app: App;
   surface: Surface;
-  stop(): Promise<void>; // the app first, so nothing it sends races the release
+  stop(): Promise<void>; // the app first, so nothing it sends races the release; runs once
 }
 
 export interface StartOptions {
@@ -21,9 +21,14 @@ export interface StartOptions {
   bundle: Bundle;
   createSurface: SurfaceFactory;
   record: RecordSink;
+  // Runs once the surface is claimed (main.ts sets up the panel here). If it throws, the app
+  // is stopped and the surface released before startAddOn rejects with its error.
+  afterClaim?: (running: Running) => Promise<void>;
 }
 
 const SUPPORTED_CONTRACT = 2;
+
+const messageOf = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 
 function isObject(value: unknown): value is object {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -60,20 +65,35 @@ export function surfaceIdOf(maps: Bundle['maps']): string {
 }
 
 export async function startAddOn(options: StartOptions): Promise<Running> {
-  const { luna, session, bundle, createSurface, record } = options;
+  const { luna, session, bundle, createSurface, record, afterClaim } = options;
   const id = surfaceIdOf(bundle.maps);
   const definition = bundle.surfaces[id];
   if (definition === undefined) throw new Error(`The bundled maps are for surface ${id}, which the bundle does not define`);
   const surface = createSurface(luna, definition);
   const app = createApp(session, bundle.maps, surface, record);
-  await app.start();
-  await surface.claim();
-  return {
+  let stopping: Promise<void> | undefined;
+  const running: Running = {
     app,
     surface,
-    async stop() {
-      await app.stop();
-      await surface.release();
+    stop() {
+      stopping ??= (async () => {
+        await app.stop();
+        await surface.release();
+      })();
+      return stopping;
     },
   };
+  await app.start();
+  try {
+    await surface.claim();
+    if (afterClaim !== undefined) await afterClaim(running);
+  } catch (error) {
+    try {
+      await running.stop();
+    } catch (stopError) {
+      throw new AggregateError([error, stopError], `Starting failed (${messageOf(error)}), and so did releasing the surface (${messageOf(stopError)})`);
+    }
+    throw error;
+  }
+  return running;
 }
