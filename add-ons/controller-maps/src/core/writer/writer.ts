@@ -61,6 +61,8 @@ export function createParameterWriter(surface: Surface, idleMs: number, record: 
   const onOutsideChange = (control: string, entry: Entry): void => {
     const value = entry.bound.param.normalized.value;
     if (value === undefined) return;
+    // Echoes of this control's own writes can arrive late or out of order during a drag.
+    if (gestures.isOpen(entry.target)) return;
     if (entry.written !== undefined && Math.abs(value - entry.written) < SAME) return;
     entry.written = undefined;
     if (entry.kind === 'follows') follow(control, entry);
@@ -95,20 +97,26 @@ export function createParameterWriter(surface: Surface, idleMs: number, record: 
         throw new Error(`Binding names control "${b.binding.control}", which the surface does not report`);
       }
     }
+    // Build everything first; a failure leaves the old entries and the open touch intact.
+    const next = new Map<string, Entry>();
+    try {
+      for (const b of bound) {
+        const control = b.binding.control;
+        const c = info.get(control);
+        if (c === undefined) continue;
+        const kind = !c.continuous ? 'button' : c.follows ? 'follows' : 'pickup';
+        const entry = makeEntry(control, b, kind);
+        next.set(control, entry);
+        valueOf(entry);
+      }
+    } catch (error) {
+      for (const entry of next.values()) entry.unsubscribe();
+      throw error;
+    }
     gestures.release('reassigned');
     for (const entry of entries.values()) entry.unsubscribe();
-    const next = new Map<string, Entry>();
-    for (const b of bound) {
-      const control = b.binding.control;
-      const c = info.get(control);
-      if (c === undefined) continue;
-      const kind = !c.continuous ? 'button' : c.follows ? 'follows' : 'pickup';
-      const entry = makeEntry(control, b, kind);
-      next.set(control, entry);
-      if (kind === 'follows') follow(control, entry);
-      if (kind === 'pickup') valueOf(entry);
-    }
     entries = next;
+    for (const [control, entry] of next) if (entry.kind === 'follows') follow(control, entry);
   };
 
   const move = (entry: Entry, value: number): void => {

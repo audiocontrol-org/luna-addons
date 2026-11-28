@@ -120,6 +120,8 @@ describe('parameter writer', () => {
     surface.emit({ kind: 'move', control: 'knob', value: 0.4 });
     await settle(engine);
     expect(surface.follows).toEqual([]);
+    vi.advanceTimersByTime(IDLE); // the drag has ended
+    await settle(engine);
     // an outside change does
     engine.setValue(input.path, 'normalized_value', 0.8);
     await settle(engine);
@@ -129,6 +131,7 @@ describe('parameter writer', () => {
     await settle(engine);
     surface.emit({ kind: 'move', control: 'slider', value: 0.5 });
     await settle(engine);
+    vi.advanceTimersByTime(IDLE);
     engine.setValue(bypass.path, 'normalized_value', 0.9);
     await settle(engine);
     surface.emit({ kind: 'move', control: 'slider', value: 0.2 });
@@ -203,5 +206,44 @@ describe('parameter writer', () => {
     writer.release('surface disconnected');
     await settle(engine);
     expect(engine.touches).toEqual([`${input.path}:on`, `${input.path}:off`]);
+  });
+
+  it('late or out-of-order echoes of its own writes during a drag are not outside changes', async () => {
+    const { engine, input, bypass, surface } = await rig();
+    engine.setValue(bypass.path, 'normalized_value', 0.5);
+    await settle(engine);
+    const writer = make(surface);
+    writer.assign([bind('knob', input), bind('slider', bypass)]);
+    surface.follows.length = 0;
+    for (const value of [0.2, 0.4, 0.6]) surface.emit({ kind: 'move', control: 'knob', value });
+    // stale notifications for earlier writes arrive after the later ones
+    engine.setValue(input.path, 'normalized_value', 0.2);
+    await settle(engine);
+    engine.setValue(input.path, 'normalized_value', 0.4);
+    await settle(engine);
+    expect(surface.follows).toEqual([]);
+    vi.advanceTimersByTime(IDLE);
+    for (const value of [0.5, 0.52, 0.7]) surface.emit({ kind: 'move', control: 'slider', value });
+    engine.setValue(bypass.path, 'normalized_value', 0.52);
+    await settle(engine);
+    expect(surface.follows).toEqual([]);
+    // pickup did not re-arm: the next move still writes
+    surface.emit({ kind: 'move', control: 'slider', value: 0.1 });
+    await settle(engine);
+    expect(engine.value(bypass.path, 'normalized_value')).toBe(0.1);
+  });
+
+  it('assign that throws partway leaves the old bindings working and follows nothing', async () => {
+    const { engine, input, bypass, surface } = await rig();
+    const writer = make(surface);
+    writer.assign([bind('knob', input)]);
+    surface.follows.length = 0;
+    const missing: Luna.Control = Object.create(bypass, { normalized: { value: { value: undefined, onChange: () => () => undefined } } });
+    expect(() => writer.assign([bind('knob', bypass), bind('slider', missing)])).toThrow(/slider/);
+    expect(surface.follows).toEqual([]);
+    surface.emit({ kind: 'move', control: 'knob', value: 0.3 });
+    await settle(engine);
+    expect(engine.value(input.path, 'normalized_value')).toBe(0.3);
+    expect(engine.value(bypass.path, 'normalized_value')).not.toBe(0.3);
   });
 });

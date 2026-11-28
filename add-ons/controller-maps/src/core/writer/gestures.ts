@@ -11,6 +11,8 @@ export interface Gestures {
   move(target: GestureTarget, normalized: number): void;
   /** Releases the open touch, if any. */
   release(why: string): void;
+  /** Whether `target` has the open touch. */
+  isOpen(target: GestureTarget): boolean;
 }
 
 /**
@@ -45,5 +47,5 @@ export function createGestures(idleMs: number, record: (event: string, detail: u
     });
   };
 
-  return { move, release };
+  return { move, release, isOpen: (target) => open?.target === target };
 }
