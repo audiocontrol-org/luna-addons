@@ -289,6 +289,19 @@ describe.each(CASES)('surface runtime: $name', (c) => {
     expect(r.intents).toEqual([]);
   });
 
+  it('a mode report during or after release leaves the status released', async () => {
+    const r = await ready(c);
+    await r.surface.indicate('transport.play', 'active');
+    const releasing = r.surface.release();
+    // The release sequence provokes a mode report; it arrives while the sequence is still going out.
+    r.engine.receiveMidi(r.inputUid, [fromHex(c.readyReport)]);
+    await r.settle();
+    await releasing;
+    await r.receive(c.readyReport, c.move.inbound);
+    expect(r.surface.status().state).toBe('released');
+    expect(r.intents).toEqual([]);
+  });
+
   it('a request with no template throws', async () => {
     const { protocol } = c.definition.profile;
     const stripped: SurfaceDefinition = { ...c.definition, profile: { ...c.definition.profile, protocol: { ...protocol, label: undefined } } };

@@ -83,7 +83,9 @@ export function createLink(luna: Luna.Client, profile: SurfaceProfile): Link {
   }
 
   function onMessage(message: Luna.MidiInputMessage): void {
-    if (message.type !== 'controlChange') return;
+    // After release() nothing the device sends counts, including the mode report the
+    // release sequence provokes while it is still going out.
+    if (!wanted || message.type !== 'controlChange') return;
     const channel = message.channel + 1;
     const mode = profile.protocol.mode;
     if (mode && channel === mode.address.channel && message.data1 === mode.address.cc) return modeReport(message.data2);
