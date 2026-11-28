@@ -4,6 +4,8 @@ import type { Intent, Role, Surface, SurfaceControlInfo, SurfaceStatus } from '@
 
 export interface FakeSurface extends Surface {
   readonly follows: Array<{ control: string; value: number }>;
+  readonly indications: Array<{ role: Role; state: 'active' | 'inactive' }>;
+  listenerCount(): number; // intent + status listeners still attached
   emit(intent: Intent): void;
   setStatus(status: SurfaceStatus): void;
 }
@@ -13,8 +15,11 @@ export function createFakeSurface(controls: readonly SurfaceControlInfo[]): Fake
   const intentListeners = new Set<(intent: Intent) => void>();
   const statusListeners = new Set<() => void>();
   const follows: Array<{ control: string; value: number }> = [];
+  const indications: Array<{ role: Role; state: 'active' | 'inactive' }> = [];
   return {
     follows,
+    indications,
+    listenerCount: () => intentListeners.size + statusListeners.size,
     emit: (intent) => { for (const l of [...intentListeners]) l(intent); },
     setStatus: (next) => { status = next; for (const l of [...statusListeners]) l(); },
     claim: () => Promise.resolve(),
@@ -27,6 +32,6 @@ export function createFakeSurface(controls: readonly SurfaceControlInfo[]): Fake
     follow: (control, value) => { follows.push({ control, value }); return Promise.resolve(); },
     label: () => Promise.resolve(),
     announce: () => Promise.resolve(),
-    indicate: () => Promise.resolve(),
+    indicate: (role, state) => { indications.push({ role, state }); return Promise.resolve(); },
   };
 }
