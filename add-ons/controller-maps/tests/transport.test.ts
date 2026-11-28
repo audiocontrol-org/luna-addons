@@ -20,7 +20,7 @@ describe('bindTransport', () => {
   it('a transport.play role toggles the transport; transport.record calls toggleRecord', async () => {
     const { engine, session } = await rig();
     const surface = createFakeSurface([]);
-    bindTransport(session, surface);
+    bindTransport(session, surface, () => undefined);
     surface.emit({ kind: 'role', role: 'transport.play' });
     await flush();
     expect(engine.value('/sessions/abc', 'playing')).toBe(true);
@@ -32,7 +32,7 @@ describe('bindTransport', () => {
   it('ignores press intents and other roles', async () => {
     const { engine, session } = await rig();
     const surface = createFakeSurface([]);
-    bindTransport(session, surface);
+    bindTransport(session, surface, () => undefined);
     surface.emit({ kind: 'press', control: 'play' });
     surface.emit({ kind: 'role', role: 'page.next' });
     await flush();
@@ -43,7 +43,7 @@ describe('bindTransport', () => {
   it('indication follows the transport', async () => {
     const { engine, session } = await rig();
     const surface = createFakeSurface([]);
-    bindTransport(session, surface);
+    bindTransport(session, surface, () => undefined);
     expect(last(surface, 'transport.play')).toBe('inactive');
     expect(last(surface, 'transport.record')).toBe('inactive');
     engine.setValue('/sessions/abc', 'playing', true);
@@ -62,7 +62,7 @@ describe('bindTransport', () => {
     await flush();
     const surface = createFakeSurface([]);
     surface.setStatus({ state: 'claiming', reason: 'claiming' });
-    bindTransport(session, surface);
+    bindTransport(session, surface, () => undefined);
     surface.indications.length = 0;
     surface.setStatus({ state: 'ready' });
     expect(surface.indications).toContainEqual({ role: 'transport.play', state: 'active' });
@@ -72,7 +72,7 @@ describe('bindTransport', () => {
   it('unsubscribe removes every listener', async () => {
     const { engine, session } = await rig();
     const surface = createFakeSurface([]);
-    const off = bindTransport(session, surface);
+    const off = bindTransport(session, surface, () => undefined);
     off();
     expect(surface.listenerCount()).toBe(0);
     surface.emit({ kind: 'role', role: 'transport.play' });
@@ -81,5 +81,34 @@ describe('bindTransport', () => {
     await flush();
     expect(engine.value('/sessions/abc', 'playing')).toBe(true); // set by the test only
     expect(surface.indications.length).toBe(before);
+  });
+
+  it('transport works with no target', async () => {
+    const { engine, session } = await rig();
+    const surface = createFakeSurface([]);
+    bindTransport(session, surface, () => undefined); // no targeting exists at all
+    surface.emit({ kind: 'role', role: 'transport.play' });
+    await flush();
+    expect(engine.value('/sessions/abc', 'playing')).toBe(true);
+  });
+
+  it('records transport-failed when a toggle rejects', async () => {
+    const { engine, session } = await rig();
+    engine.fail('/sessions/abc/playing', 'uasrv.busy');
+    const events: Array<[string, unknown]> = [];
+    const surface = createFakeSurface([]);
+    bindTransport(session, surface, (e, d) => events.push([e, d]));
+    surface.emit({ kind: 'role', role: 'transport.play' });
+    await flush();
+    expect(events.map(([e]) => e)).toContain('transport-failed');
+  });
+
+  it('records indicate-failed when indicate rejects', async () => {
+    const { session } = await rig();
+    const events: Array<[string, unknown]> = [];
+    const surface = { ...createFakeSurface([]), indicate: () => Promise.reject(new Error('boom')) };
+    bindTransport(session, surface, (e, d) => events.push([e, d]));
+    await flush();
+    expect(events.map(([e]) => e)).toContain('indicate-failed');
   });
 });
