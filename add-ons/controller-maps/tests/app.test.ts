@@ -7,6 +7,7 @@ import type { Bundle } from '@/bundle/types';
 import { createApp, type App } from '@/core/app';
 import type { SurfaceControlInfo, SurfaceStatus } from '@/surface/api';
 import { createFakeSurface, type FakeSurface, type FakeSurfaceOptions } from './fixtures/fake-surface';
+import { addParam } from './fixtures/params';
 
 const bundlePath = fileURLToPath(new URL('../src/bundle/generated.json', import.meta.url));
 const bundle: Bundle = JSON.parse(readFileSync(bundlePath, 'utf8'));
@@ -35,35 +36,6 @@ function controls(): SurfaceControlInfo[] {
     continuous: !id.startsWith('button'),
     follows: id.startsWith('encoder'),
   }));
-}
-
-function addParam(engine: Luna.MockEngine, path: string, name: string): void {
-  engine.addNode(path, {
-    properties: {
-      uid: `ctl_${path.replaceAll('/', '_')}`,
-      name,
-      control_type: 'parameter',
-      value: 0.5,
-      real_value: 0.5,
-      normalized_value: 0.5,
-      string_value: '0.5',
-      automatable: true,
-      discrete: false,
-      num_steps: 0,
-      initialized: true,
-      touch_count: 0,
-      real_values: [],
-      string_values: [],
-      taper: null,
-    },
-    commands: {
-      set_touch: (data, eng, nodePath) => {
-        const on = typeof data === 'object' && data !== null && 'touch' in data && Boolean(data.touch);
-        eng.touches.push(`${nodePath}:${on ? 'on' : 'off'}`);
-        return null;
-      },
-    },
-  });
 }
 
 interface Rig {
