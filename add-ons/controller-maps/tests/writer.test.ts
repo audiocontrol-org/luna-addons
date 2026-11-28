@@ -139,6 +139,46 @@ describe('parameter writer', () => {
     expect(engine.value(bypass.path, 'normalized_value')).toBe(0.9);
   });
 
+  it('an outside change during an open drag re-follows a follows control when the gesture ends', async () => {
+    const { engine, input, surface } = await rig();
+    engine.setValue(input.path, 'normalized_value', 0.5);
+    await settle(engine);
+    const writer = make(surface);
+    writer.assign([bind('knob', input)]);
+    surface.follows.length = 0;
+    surface.emit({ kind: 'move', control: 'knob', value: 0.4 });
+    await settle(engine);
+    engine.setValue(input.path, 'normalized_value', 0.8); // an undo lands inside the idle window
+    await settle(engine);
+    expect(surface.follows).toEqual([]); // the drag is still open
+    vi.advanceTimersByTime(IDLE);
+    await settle(engine);
+    expect(surface.follows).toEqual([{ control: 'knob', value: 0.8 }]);
+  });
+
+  it('an outside change during an open drag re-arms pickup when the gesture ends', async () => {
+    const { engine, bypass, surface } = await rig();
+    engine.setValue(bypass.path, 'normalized_value', 0.5);
+    await settle(engine);
+    const writer = make(surface);
+    writer.assign([bind('slider', bypass)]);
+    surface.emit({ kind: 'move', control: 'slider', value: 0.5 }); // picks up
+    surface.emit({ kind: 'move', control: 'slider', value: 0.6 });
+    await settle(engine);
+    expect(engine.value(bypass.path, 'normalized_value')).toBe(0.6);
+    engine.setValue(bypass.path, 'normalized_value', 0.9); // a snapshot recall inside the idle window
+    await settle(engine);
+    writer.release('surface suspended'); // a release closes the gesture too
+    await settle(engine);
+    surface.emit({ kind: 'move', control: 'slider', value: 0.62 }); // stale fader position: no jump
+    await settle(engine);
+    expect(engine.value(bypass.path, 'normalized_value')).toBe(0.9);
+    surface.emit({ kind: 'move', control: 'slider', value: 0.9 }); // picks up again
+    surface.emit({ kind: 'move', control: 'slider', value: 0.95 });
+    await settle(engine);
+    expect(engine.value(bypass.path, 'normalized_value')).toBe(0.95);
+  });
+
   it('toggle button flips once per press', async () => {
     const { engine, bypass, surface } = await rig();
     engine.setValue(bypass.path, 'normalized_value', 0);

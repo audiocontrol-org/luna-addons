@@ -18,9 +18,13 @@ export interface Gestures {
 /**
  * One touch at a time: a move opens a touch on its target, a move on another target releases
  * it, and `idleMs` without a move releases it. A rejected write releases the touch too, so
- * LUNA is never left holding one.
+ * LUNA is never left holding one. `onEnd` runs after a touch ends, whatever ended it.
  */
-export function createGestures(idleMs: number, record: (event: string, detail: unknown) => void): Gestures {
+export function createGestures(
+  idleMs: number,
+  record: (event: string, detail: unknown) => void,
+  onEnd: (target: GestureTarget) => void = () => undefined,
+): Gestures {
   let open: { target: GestureTarget; timer: ReturnType<typeof setTimeout> } | undefined;
 
   const release = (why: string): void => {
@@ -30,6 +34,7 @@ export function createGestures(idleMs: number, record: (event: string, detail: u
     clearTimeout(timer);
     target.end();
     record('end', { param: target.name, why });
+    onEnd(target);
   };
 
   const move = (target: GestureTarget, normalized: number): void => {

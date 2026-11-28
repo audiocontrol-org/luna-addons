@@ -25,17 +25,18 @@ const PICKUP_WINDOW = 1 / 127;
 const SAME = 1e-6;
 
 interface Entry {
+  control: string;
   bound: BoundParameter;
   target: GestureTarget;
   kind: 'follows' | 'pickup' | 'button';
   armed: boolean;
   previous: number | undefined; // last incoming value while armed
   written: number | undefined; // last value this writer wrote, to tell echoes from outside changes
+  dragged: number[]; // the values written in the open gesture; any of them may echo late
   unsubscribe: Luna.Unsubscribe;
 }
 
 export function createParameterWriter(surface: Surface, idleMs: number, record: Record): ParameterWriter {
-  const gestures = createGestures(idleMs, record);
   let entries = new Map<string, Entry>();
 
   const valueOf = (entry: Entry): number => {
@@ -58,34 +59,62 @@ export function createParameterWriter(surface: Surface, idleMs: number, record: 
     return entry.bound.param.normalized.set(value);
   };
 
-  const onOutsideChange = (control: string, entry: Entry): void => {
-    const value = entry.bound.param.normalized.value;
-    if (value === undefined) return;
-    // Echoes of this control's own writes can arrive late or out of order during a drag.
-    if (gestures.isOpen(entry.target)) return;
-    if (entry.written !== undefined && Math.abs(value - entry.written) < SAME) return;
+  // The parameter moved under the control: bring a follows control to it, or make a pickup
+  // control pick it up again before it writes.
+  const outside = (entry: Entry): void => {
     entry.written = undefined;
-    if (entry.kind === 'follows') follow(control, entry);
+    if (entry.kind === 'follows') follow(entry.control, entry);
     else if (entry.kind === 'pickup') {
       entry.armed = true;
       entry.previous = undefined;
     }
   };
 
+  const onOutsideChange = (entry: Entry): void => {
+    const value = entry.bound.param.normalized.value;
+    if (value === undefined) return;
+    // Echoes of this control's own writes can arrive late or out of order during a drag; the
+    // gesture's end settles it (onGestureEnd).
+    if (gestures.isOpen(entry.target)) return;
+    if (entry.written !== undefined && Math.abs(value - entry.written) < SAME) return;
+    outside(entry);
+  };
+
+  // A change from outside while the gesture was open was ignored above. Once the gesture ends,
+  // a value this gesture did not write is that change. Only for a current binding: an entry
+  // that was replaced is gone with its control's old meaning.
+  const onGestureEnd = (target: GestureTarget): void => {
+    const entry = [...entries.values()].find((e) => e.target === target);
+    if (entry === undefined) return;
+    const dragged = entry.dragged;
+    entry.dragged = [];
+    const value = entry.bound.param.normalized.value;
+    if (value === undefined || entry.written === undefined) return;
+    if (dragged.some((w) => Math.abs(value - w) < SAME)) return;
+    outside(entry);
+  };
+
+  const gestures = createGestures(idleMs, record, onGestureEnd);
+
   const makeEntry = (control: string, bound: BoundParameter, kind: Entry['kind']): Entry => {
     const entry: Entry = {
+      control,
       bound,
       kind,
       armed: kind === 'pickup',
       previous: undefined,
       written: undefined,
+      dragged: [],
       target: {
         name: bound.binding.paramId,
         begin: () => { bound.param.begin(); },
         end: () => { bound.param.end(); },
-        write: (value) => write(entry, value),
+        write: (value) => {
+          entry.dragged.push(value);
+          return write(entry, value);
+        },
       },
-      unsubscribe: bound.param.normalized.onChange(() => { onOutsideChange(control, entry); }),
+      unsubscribe: bound.param.normalized.onChange(() => { onOutsideChange(entry); }),
     };
     return entry;
   };
@@ -113,9 +142,10 @@ export function createParameterWriter(surface: Surface, idleMs: number, record: 
       for (const entry of next.values()) entry.unsubscribe();
       throw error;
     }
+    const old = entries;
+    entries = next; // first, so the old touch ending reconciles nothing
     gestures.release('reassigned');
-    for (const entry of entries.values()) entry.unsubscribe();
-    entries = next;
+    for (const entry of old.values()) entry.unsubscribe();
     for (const [control, entry] of next) if (entry.kind === 'follows') follow(control, entry);
   };
 
