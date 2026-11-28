@@ -1,5 +1,6 @@
 // The Add On's composition, without the DOM: check the bundle, pick its surface, build the
-// surface with the injected factory, and start the app on it. main.ts injects the surface
+// surface with the injected factory, claim it, and run an app on LUNA's focused session,
+// rebuilding it when the session changes. main.ts injects the surface
 // runtime's createSurface (it is the one file outside the runtime that may import it); tests
 // inject the same function.
 import type { Bundle } from '@/bundle/types';
@@ -9,15 +10,24 @@ import type { Surface } from '@/surface/api';
 export type SurfaceFactory = (luna: Luna.Client, definition: Bundle['surfaces'][string]) => Surface;
 export type RecordSink = (event: string, detail: unknown) => void;
 
-export interface Running {
+export interface SessionApp {
+  session: Luna.Session;
   app: App;
+}
+
+export interface Running {
   surface: Surface;
+  // The focused session (or the first open one) and its app; undefined while none is open.
+  current(): SessionApp | undefined;
+  // Why the last switch built no app, until a later one succeeds.
+  failure(): string | undefined;
+  // After a session switch, and on every change of the current app.
+  onChange(listener: () => void): Luna.Unsubscribe;
   stop(): Promise<void>; // the app first, so nothing it sends races the release; runs once
 }
 
 export interface StartOptions {
-  luna: Luna.Client;
-  session: Luna.Session;
+  luna: Luna.Client; // luna.sessions.ready() has resolved
   bundle: Bundle;
   createSurface: SurfaceFactory;
   record: RecordSink;
@@ -64,27 +74,93 @@ export function surfaceIdOf(maps: Bundle['maps']): string {
   return only;
 }
 
-export async function startAddOn(options: StartOptions): Promise<Running> {
-  const { luna, session, bundle, createSurface, record, afterClaim } = options;
-  const id = surfaceIdOf(bundle.maps);
-  const definition = bundle.surfaces[id];
-  if (definition === undefined) throw new Error(`The bundled maps are for surface ${id}, which the bundle does not define`);
-  const surface = createSurface(luna, definition);
-  const app = createApp(session, bundle.maps, surface, record);
+// Follows LUNA's focused session. A switch stops the old session's app, then builds and starts
+// one on the new session, on the same surface: the surface stays claimed throughout, so a
+// switch never releases the controller. With no session open there is no app, so nothing
+// writes. Switches run one after another; one overtaken by a newer switch builds nothing.
+interface Follower extends Running {
+  sync(): Promise<void>; // builds the app for the session LUNA has now; resolves once it is built
+}
+
+function followSessions(options: StartOptions, surface: Surface): Follower {
+  const { luna, bundle, record } = options;
+  const listeners = new Set<() => void>();
+  let current: (SessionApp & { off: Luna.Unsubscribe }) | undefined;
+  let wanted: Luna.Session | undefined;
+  let queue: Promise<void> = Promise.resolve();
+  let stopped = false;
   let stopping: Promise<void> | undefined;
-  const running: Running = {
-    app,
+  let failure: string | undefined;
+
+  const notify = (): void => { for (const listener of [...listeners]) listener(); };
+
+  const leave = async (): Promise<void> => {
+    const old = current;
+    if (old === undefined) return;
+    current = undefined;
+    old.off();
+    await old.app.stop();
+    notify();
+  };
+
+  const enter = async (next: Luna.Session | undefined): Promise<void> => {
+    if (next !== wanted || stopped) return; // a newer switch is queued
+    await leave();
+    if (next === undefined) return;
+    await next.ready();
+    if (next !== wanted || stopped) return;
+    const app = createApp(next, bundle.maps, surface, record);
+    await app.start();
+    current = { session: next, app, off: app.onChange(notify) };
+    failure = undefined;
+    notify();
+  };
+
+  const sync = (): Promise<void> => {
+    const next = luna.sessions.current();
+    if (next === wanted) return queue;
+    wanted = next;
+    queue = queue.then(() => enter(next)).catch((error: unknown) => {
+      record('session-failed', { session: next?.uid, error });
+      failure = messageOf(error);
+      notify();
+    });
+    return queue;
+  };
+
+  const offs = [luna.sessions.focused.onChange(() => { void sync(); }), luna.sessions.items.onChange(() => { void sync(); })];
+
+  return {
     surface,
+    sync,
+    current: () => (current === undefined ? undefined : { session: current.session, app: current.app }),
+    failure: () => failure,
+    onChange(listener) {
+      listeners.add(listener);
+      return () => { listeners.delete(listener); };
+    },
     stop() {
       stopping ??= (async () => {
-        await app.stop();
+        stopped = true;
+        for (const off of offs) off();
+        await queue;
+        await leave();
         await surface.release();
       })();
       return stopping;
     },
   };
-  await app.start();
+}
+
+export async function startAddOn(options: StartOptions): Promise<Running> {
+  const { luna, bundle, createSurface, afterClaim } = options;
+  const id = surfaceIdOf(bundle.maps);
+  const definition = bundle.surfaces[id];
+  if (definition === undefined) throw new Error(`The bundled maps are for surface ${id}, which the bundle does not define`);
+  const surface = createSurface(luna, definition);
+  const running = followSessions(options, surface);
   try {
+    await running.sync(); // the app listens before the claim, so it sees the surface become ready
     await surface.claim();
     if (afterClaim !== undefined) await afterClaim(running);
   } catch (error) {
