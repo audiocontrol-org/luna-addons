@@ -66,19 +66,35 @@ export function createApp(session: Luna.Session, maps: Bundle['maps'], surface: 
   const writer = createParameterWriter(surface, TOUCH_IDLE_MS, sink);
 
   // A surface request whose failure, thrown or rejected, is reported and never aborts the caller.
-  const request = (event: string, detail: Record<string, unknown>, send: () => Promise<void>): void => {
-    let pending: Promise<void>;
+  // The promise it returns never rejects.
+  const request = (event: string, detail: Record<string, unknown>, send: () => Promise<void>): Promise<void> => {
     try {
-      pending = send();
+      return send().catch((error: unknown) => { sink(event, { ...detail, error }); });
     } catch (error) {
       sink(event, { ...detail, error });
-      return;
+      return Promise.resolve();
     }
-    pending.catch((error: unknown) => { sink(event, { ...detail, error }); });
   };
+
+  // The controls this app has labelled. A control the bound set leaves out is labelled with
+  // empty text, so it never shows a parameter it no longer drives. Only on a ready surface: a
+  // label sent elsewhere reaches nothing (R7), so the control stays listed until it can be cleared.
+  const labelled = new Set<string>();
+  const clearLabels = (keep: ReadonlySet<string>): Promise<void>[] => {
+    if (surface.status().state !== 'ready') return [];
+    const pending: Promise<void>[] = [];
+    for (const control of [...labelled]) {
+      if (keep.has(control)) continue;
+      labelled.delete(control);
+      pending.push(request('label-failed', { control }, () => surface.label(control, '')));
+    }
+    return pending;
+  };
+  const NOTHING: ReadonlySet<string> = new Set();
 
   const refuse = (event: string, error: unknown): void => {
     writer.assign([]);
+    void clearLabels(NOTHING);
     resolution = { ok: false, reason: messageOf({ error }), mismatches: [] };
     sink(event, { error });
   };
@@ -96,8 +112,10 @@ export function createApp(session: Luna.Session, maps: Bundle['maps'], surface: 
       refuse('assign-failed', error);
       return;
     }
+    void clearLabels(new Set(bound.map(({ binding }) => binding.control)));
     for (const { binding } of bound) {
-      request('label-failed', { control: binding.control }, () => surface.label(binding.control, binding.label));
+      labelled.add(binding.control);
+      void request('label-failed', { control: binding.control }, () => surface.label(binding.control, binding.label));
     }
   };
 
@@ -109,6 +127,7 @@ export function createApp(session: Luna.Session, maps: Bundle['maps'], surface: 
     if (target.state !== 'ready') {
       resolution = undefined;
       writer.assign([]);
+      void clearLabels(NOTHING);
       notify();
       return false;
     }
@@ -155,7 +174,7 @@ export function createApp(session: Luna.Session, maps: Bundle['maps'], surface: 
     if (shown === undefined) throw new Error(`Map "${map.name}" has no page at index ${index}`);
     run(() => {
       const text = `${shown.name} ${index + 1}/${total}`;
-      request('announce-failed', { text }, () => surface.announce(text));
+      void request('announce-failed', { text }, () => surface.announce(text));
     });
   };
 
@@ -204,6 +223,7 @@ export function createApp(session: Luna.Session, maps: Bundle['maps'], surface: 
       writer.release('stopped');
       writer.assign([]); // drops the writer's parameter listeners
       resolution = undefined;
+      await Promise.all(clearLabels(NOTHING)); // the next app on this surface starts clean
     },
     async release() {
       writer.release('controller released');

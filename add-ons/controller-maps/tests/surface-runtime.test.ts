@@ -32,6 +32,7 @@ interface Case {
   follow: { control: string; sent: string };
   nonFollow: string;
   label: { control: string; text: string; sent: string[] };
+  clearLabel: string[]; // label(label.control, '')
   announce: { text: string; sent: string[] };
   indicatePlay: string[];
   release: string[];
@@ -57,6 +58,7 @@ const CASES: Case[] = [
       text: 'Gain',
       sent: ['F0 00 20 29 02 15 04 0D 62 F7', 'F0 00 20 29 02 15 06 0D 01 47 61 69 6E F7'],
     },
+    clearLabel: ['F0 00 20 29 02 15 04 0D 62 F7', 'F0 00 20 29 02 15 06 0D 01 F7'],
     announce: { text: 'Page 1', sent: ['F0 00 20 29 02 15 04 36 62 F7', 'F0 00 20 29 02 15 06 36 01 50 61 67 65 20 31 F7'] },
     indicatePlay: ['B0 74 21'],
     release: ['B0 74 00', 'F0 00 20 29 02 15 02 00 F7'],
@@ -76,6 +78,7 @@ const CASES: Case[] = [
     follow: { control: 'knob_a', sent: 'F0 7D 20 03 28 40 F7' },
     nonFollow: 'knob_b',
     label: { control: 'knob_a', text: 'Gain', sent: ['F0 7D 30 28 47 61 69 6E F7'] },
+    clearLabel: ['F0 7D 30 28 F7'],
     announce: { text: 'Page 1', sent: ['F0 7D 31 50 61 67 65 20 31 00 F7'] },
     indicatePlay: ['B1 3E 5A'],
     release: ['B1 3E 03', 'F0 7D 11 00 F7', 'B8 64 00'],
@@ -265,6 +268,13 @@ describe.each(CASES)('surface runtime: $name', (c) => {
     const indicateMark = r.engine.midiSent.length;
     await r.surface.indicate('transport.play', 'active');
     expect(r.sentSince(indicateMark)).toEqual(c.indicatePlay);
+  });
+
+  it('label with empty text fills {text} with no bytes', async () => {
+    const r = await ready(c);
+    const mark = r.engine.midiSent.length;
+    await r.surface.label(c.label.control, '');
+    expect(r.sentSince(mark)).toEqual(c.clearLabel);
   });
 
   it('follow clamps to the 7-bit range and refuses a control that does not follow', async () => {
