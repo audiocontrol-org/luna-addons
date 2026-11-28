@@ -123,23 +123,38 @@ export function createApp(session: Luna.Session, maps: Bundle['maps'], surface: 
       refuse('bindings-failed', error);
     }
     notify();
-    return resolution?.ok === true;
+    return true;
   };
 
+  // `after` runs only when this rebuild is still the current one once it finishes.
   const run = (after?: () => void): void => {
     rebuild()
-      .then((bound) => { if (bound && after) after(); })
+      .then((current) => { if (current && after) after(); })
       .catch((error: unknown) => { sink('rebuild-failed', { error }); });
   };
 
+  // The old bindings are invalid from this moment: no intent may reach them while the new
+  // ones are loading.
+  const invalidate = (why: string): void => {
+    writer.release(why);
+    writer.assign([]);
+  };
+
+  // Each page resolves on its own, so a refused page does not stop paging; only a plugin with
+  // no map does.
   const page = (step: 1 | -1): void => {
-    if (resolution === undefined || !resolution.ok) return;
-    const total = resolution.map.pages.length;
-    writer.release('page changed');
+    const target = targeting.current();
+    if (target.state !== 'ready') return;
+    const map = maps[target.pluginId];
+    if (map === undefined || map.pages.length === 0) return;
+    const total = map.pages.length;
+    invalidate('page changed');
     pageIndex = (((pageIndex + step) % total) + total) % total;
+    const index = pageIndex;
+    const shown = map.pages[index];
+    if (shown === undefined) throw new Error(`Map "${map.name}" has no page at index ${index}`);
     run(() => {
-      if (resolution === undefined || !resolution.ok) return;
-      const text = `${resolution.pageName} ${resolution.pageIndex + 1}/${resolution.map.pages.length}`;
+      const text = `${shown.name} ${index + 1}/${total}`;
       request('announce-failed', { text }, () => surface.announce(text));
     });
   };
@@ -148,7 +163,7 @@ export function createApp(session: Luna.Session, maps: Bundle['maps'], surface: 
     const next = targeting.current();
     if (!sameInsert(lastTarget, next)) pageIndex = 0;
     lastTarget = next;
-    writer.release('target changed');
+    invalidate('target changed');
     notify();
     run();
   };
@@ -158,10 +173,7 @@ export function createApp(session: Luna.Session, maps: Bundle['maps'], surface: 
     if (status.state !== lastState) {
       lastState = status.state;
       if (status.state === 'ready') run();
-      else {
-        writer.release(`surface ${status.state}: ${status.reason}`);
-        writer.assign([]);
-      }
+      else invalidate(`surface ${status.state}: ${status.reason}`);
     }
     notify();
   };

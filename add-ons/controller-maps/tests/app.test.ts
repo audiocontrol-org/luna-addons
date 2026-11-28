@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { Bundle } from '@/bundle/types';
 import { createApp, type App } from '@/core/app';
-import type { SurfaceControlInfo } from '@/surface/api';
+import type { SurfaceControlInfo, SurfaceStatus } from '@/surface/api';
 import { createFakeSurface, type FakeSurface, type FakeSurfaceOptions } from './fixtures/fake-surface';
 
 const bundlePath = fileURLToPath(new URL('../src/bundle/generated.json', import.meta.url));
@@ -78,7 +78,14 @@ interface Rig {
 
 let running: App | undefined;
 
-async function rig(options: { leaveOut?: string[]; surface?: FakeSurfaceOptions; target?: boolean } = {}): Promise<Rig> {
+interface RigOptions {
+  leaveOut?: string[];
+  surface?: FakeSurfaceOptions;
+  target?: boolean;
+  status?: SurfaceStatus; // the surface's status before the app starts
+}
+
+async function rig(options: RigOptions = {}): Promise<Rig> {
   const engine = new Luna.MockEngine();
   engine.addSession('abc', { tracks: ['Vocal'], name: 'Demo' });
   engine.addPlugin(VISION, { name: 'API Vision Channel Strip' });
@@ -96,6 +103,7 @@ async function rig(options: { leaveOut?: string[]; surface?: FakeSurfaceOptions;
   for (const p of visionParams()) if (!leaveOut.has(p.id)) addParam(engine, `${slot.path}/controls/${p.id}`, p.name);
   await engine.settled();
   const surface = createFakeSurface(controls(), options.surface);
+  if (options.status !== undefined) surface.setStatus(options.status);
   const events: Array<{ event: string; detail: unknown }> = [];
   const app = createApp(session, bundle.maps, surface, (event, detail) => { events.push({ event, detail }); });
   running = app;
@@ -266,10 +274,115 @@ describe('app', () => {
     expect(engine.touches).toEqual([]);
     expect(valueOf('560_16khz')).toBe(0.5);
     expect(valueOf('550_hf_freq')).toBe(0.5);
-    // A refused page holds no paging; there is nothing to page from.
+    // The refused page is still announced, so the user sees where they are.
+    expect(surface.announcements).toEqual(['560 EQ 2/2']);
+  });
+
+  it('a refused page does not trap the user: paging moves on to a page that binds (R11)', async () => {
+    const { surface, valueOf, app } = await rig({ leaveOut: ['560_31hz'] });
     surface.emit({ kind: 'role', role: 'page.next' });
     await flush();
+    expect(app.state().resolution?.ok).toBe(false);
+    surface.emit({ kind: 'role', role: 'page.next' });
+    await flush();
+    expect(surface.announcements).toEqual(['560 EQ 2/2', 'Channel 1/2']);
+    const r = app.state().resolution;
+    expect(r?.ok && r.pageName).toBe('Channel');
+    app.page(-1);
+    await flush();
+    app.page(1);
+    await flush();
+    expect(surface.announcements).toEqual(['560 EQ 2/2', 'Channel 1/2', '560 EQ 2/2', 'Channel 1/2']);
+    move(surface, 'encoder_1_1', 0.61);
+    await flush();
+    expect(valueOf('550_hf_freq')).toBe(0.61);
+  });
+
+  it('a move right after page.next reaches no old binding', async () => {
+    const { engine, surface, slot, valueOf } = await rig();
+    engine.touches.length = 0;
+    surface.emit({ kind: 'role', role: 'page.next' });
+    move(surface, 'encoder_1_1', 0.77);
+    await flush();
+    expect(valueOf('550_hf_freq')).toBe(0.5);
+    expect(engine.touches.filter((t) => t.startsWith(`${slot.path}/controls/550_hf_freq`))).toEqual([]);
+  });
+
+  it('a move right after the plugin is swapped reaches no old binding', async () => {
+    const { engine, surface, slot, valueOf, app } = await rig();
+    engine.touches.length = 0;
+    // Subscribed after the app, so this runs right after the app sees the change.
+    app.targeting.onChange(() => { move(surface, 'encoder_1_1', 0.88); });
+    await slot.setPlugin(UNMAPPED);
+    await flush();
+    expect(valueOf('550_hf_freq')).toBe(0.5);
+    expect(engine.touches.filter((t) => t.startsWith(`${slot.path}/controls/550_hf_freq`))).toEqual([]);
+  });
+
+  it('a surface not ready at start: nothing is followed, labelled or announced until it is ready', async () => {
+    const { surface, valueOf } = await rig({ status: { state: 'claiming', reason: 'fake claiming' } });
+    expect(surface.follows).toEqual([]);
+    expect(surface.labels).toEqual([]);
     expect(surface.announcements).toEqual([]);
+    surface.setStatus({ state: 'ready' });
+    await flush();
+    expect(surface.follows.map((f) => f.control)).toContain('encoder_1_1');
+    expect(surface.labels.length).toBeGreaterThan(0);
+    move(surface, 'encoder_1_1', 0.42);
+    await flush();
+    expect(valueOf('550_hf_freq')).toBe(0.42);
+  });
+
+  it('readiness lost while a rebuild waits for the load: the stale rebuild applies nothing', async () => {
+    const { surface, valueOf, app } = await rig({ target: false });
+    await app.targeting.choose('Vocal', 'effect_0');
+    expect(app.state().resolution).toBeUndefined(); // the rebuild is still waiting for the load
+    surface.setStatus({ state: 'suspended', reason: 'fake suspended' });
+    await flush();
+    expect(surface.follows).toEqual([]);
+    expect(surface.labels).toEqual([]);
+    move(surface, 'encoder_1_1', 0.33);
+    await flush();
+    expect(valueOf('550_hf_freq')).toBe(0.5);
+  });
+
+  it('the target changing while a rebuild waits for the load: the stale rebuild applies nothing', async () => {
+    const { surface, app } = await rig({ target: false });
+    await app.targeting.choose('Vocal', 'effect_0');
+    expect(app.state().resolution).toBeUndefined(); // the rebuild is still waiting for the load
+    app.targeting.clear();
+    await flush();
+    expect(surface.labels).toEqual([]);
+    expect(surface.follows).toEqual([]);
+    expect(app.state().resolution).toBeUndefined();
+  });
+
+  it('two quick page changes: only the last one binds and announces', async () => {
+    const { surface } = await rig();
+    surface.labels.length = 0;
+    surface.emit({ kind: 'role', role: 'page.next' });
+    surface.emit({ kind: 'role', role: 'page.next' });
+    await flush();
+    expect(surface.announcements).toEqual(['Channel 1/2']);
+    const first = visionMap().pages[0];
+    if (!first) throw new Error('the API Vision map has no pages');
+    expect(surface.labels).toEqual(first.assignments.map((a) => ({ control: a.control, text: a.parameter.name })));
+  });
+
+  it('swapping from an unmapped plugin back to a mapped one rebuilds with the map', async () => {
+    const { surface, slot, valueOf, app } = await rig();
+    await slot.setPlugin(UNMAPPED);
+    await flush();
+    expect(app.state().resolution?.ok).toBe(false);
+    surface.labels.length = 0;
+    await slot.setPlugin(VISION);
+    await flush();
+    const r = app.state().resolution;
+    expect(r?.ok && r.pageName).toBe('Channel');
+    expect(surface.labels.length).toBeGreaterThan(0);
+    move(surface, 'encoder_1_1', 0.27);
+    await flush();
+    expect(valueOf('550_hf_freq')).toBe(0.27);
   });
 
   it('assign labels each bound control with its parameter name', async () => {
